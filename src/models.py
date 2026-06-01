@@ -31,7 +31,7 @@ class CompositeProduct:
     product_name: str
     manufacturer: Optional[str] = None
     is_commercial: bool = False
-    components: list = field(default_factory=list)
+    components: list[dict[str, str]] = field(default_factory=list)
     original_text: str = ""
     evidence_text: str = ""
     source_location: str = ""

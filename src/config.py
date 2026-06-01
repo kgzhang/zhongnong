@@ -15,14 +15,20 @@ ALTERNATIVE_TSV = PROJECT_ROOT / "ALTERNATIVE.tsv"
 SCHEMA_TSV = PROJECT_ROOT / "SCHEMA.tsv"
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-LLM_MODEL = os.environ.get("LLM_MODEL", "claude-sonnet-4-6")
-LLM_MAX_RETRIES = 2
-BATCH_SIZE = 50
-MAX_CONCURRENT = 12
+LLM_MODEL = os.environ.get("LLM_MODEL", "claude-sonnet-4-20250514")
+LLM_MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "2"))
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "50"))
+MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT", "12"))
 
 ENTREZ_EMAIL = os.environ.get("ENTREZ_EMAIL", "")
 ENTREZ_API_KEY = os.environ.get("ENTREZ_API_KEY", "")
 
-for d in [DATA_DIR, XML_DIR, SECTIONS_DIR, ENTITIES_DIR, RELATIONS_DIR,
-          OUTPUT_TSV_DIR, OUTPUT_NEO4J_DIR, SCHEMAS_DIR]:
-    d.mkdir(parents=True, exist_ok=True)
+def ensure_dirs():
+    for d in [DATA_DIR, XML_DIR, SECTIONS_DIR, ENTITIES_DIR, RELATIONS_DIR,
+              OUTPUT_TSV_DIR, OUTPUT_NEO4J_DIR, SCHEMAS_DIR]:
+        d.mkdir(parents=True, exist_ok=True)
+
+
+def validate():
+    if not ENTREZ_EMAIL:
+        print("WARNING: ENTREZ_EMAIL not set. PubMed API calls may be rate-limited.")
