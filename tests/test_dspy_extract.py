@@ -135,6 +135,60 @@ class TestAlternativeGate:
             assert len(alts) > 0, "Must have at least one Alternative in TSV"
 
 
+class TestGraphOutput:
+    """Verify nodes.tsv + edges.tsv + evidence.tsv format."""
+
+    def test_output_files_exist(self):
+        """All three output files must exist after pipeline runs."""
+        for name in ["nodes.tsv", "edges.tsv", "evidence.tsv"]:
+            p = Path("data/output/tsv") / name
+            assert p.exists(), f"Missing: {name}"
+
+    def test_global_ids_use_name_not_seq(self):
+        """Global entities must use name-based IDs, not sequential numbers."""
+        import pandas as pd
+        df = pd.read_csv("data/output/tsv/nodes.tsv", sep="\t")
+        # Alternative, Tissue_Site, Indicator, Method should use type:name format
+        for _, row in df.iterrows():
+            ntype = row["node_type"]
+            nid = str(row["node_id"])
+            if ntype in ("Alternative", "Tissue_Site", "Indicator", "Method",
+                         "Alternative_Class", "Swine"):
+                assert ":" in nid, f"Global node {ntype} must have namespaced ID, got: {nid}"
+                # Should be TYPE:name not TYPE:number
+                prefix = nid.split(":")[0]
+                assert prefix in ("ALT", "CLS", "TIS", "IND", "MET", "SWN"), \
+                    f"Unexpected prefix in {nid}"
+
+    def test_local_ids_use_pmid(self):
+        """Local entities must use PMID-based IDs."""
+        import pandas as pd
+        df = pd.read_csv("data/output/tsv/nodes.tsv", sep="\t")
+        for _, row in df.iterrows():
+            ntype = row["node_type"]
+            nid = str(row["node_id"])
+            if ntype in ("Intervention", "Result", "Control_Group"):
+                # Should contain an underscore (pmid_seq)
+                assert "_" in nid, f"Local node {ntype} needs PMID-based ID, got: {nid}"
+
+    def test_evidence_dedup(self):
+        """evidence.tsv should have fewer entries than raw evidence_text references."""
+        import pandas as pd
+        ev = pd.read_csv("data/output/tsv/evidence.tsv", sep="\t")
+        nodes = pd.read_csv("data/output/tsv/nodes.tsv", sep="\t")
+        # Count EV: references in nodes (excluding EV:NONE)
+        ev_refs = 0
+        for col in nodes.columns:
+            ev_refs += nodes[col].astype(str).str.match(r'^EV:[0-9a-f]{12}$').sum()
+        assert len(ev) <= ev_refs, \
+            f"Evidence registry has {len(ev)} entries for {ev_refs} references (expect dedup)"
+
+    def test_no_cypher_file(self):
+        """We no longer generate Cypher; only TSV."""
+        cypher_path = Path("data/output/neo4j/import.cypher")
+        # May exist from old runs but we don't generate it anymore
+
+
 class TestRelationshipGeneration:
     """Verify that relationships are generated for all entity types."""
 

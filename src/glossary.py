@@ -311,8 +311,9 @@ class GlossaryIndex:
             "match_source": "词表精确匹配",
         }
 
-        # Exact match index
-        self._exact[key] = entry
+        # Exact match index — skip parsing artifacts (single chars, numbers)
+        if len(key.strip()) >= 3 and not key.strip().isdigit():
+            self._exact[key] = entry
 
         # Fuzzy matching uses the canonical (stripped) name as comparison basis
         self._fuzzy_entries.append({"canonical": key, "entry": entry})
