@@ -32,6 +32,63 @@ def _is_element_grouped(text: str) -> bool:
     return bool(re.search(r"[(（]\w+[)）]\s*[：:]", text))
 
 
+def _split_commas_smart(text: str) -> list[str]:
+    """Split on commas, but only those NOT inside parentheses.
+
+    Tracks nesting depth so parenthetical lists like
+    ``phytase (e.g., 3-phytase, 6-phytase)`` stay as one piece.
+    """
+    parts = []
+    depth = 0
+    current: list[str] = []
+    for ch in text:
+        if ch in "(（":
+            depth += 1
+            current.append(ch)
+        elif ch in ")）":
+            depth -= 1
+            current.append(ch)
+        elif ch == "," and depth == 0:
+            parts.append("".join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+    if current:
+        parts.append("".join(current).strip())
+    return parts
+
+
+def _find_trailing_paren_group(text: str) -> tuple[str | None, str]:
+    """Find the last balanced parentheses group at the end of *text*.
+
+    Returns ``(content_inside, text_before)`` when a trailing ``(...)``
+    group preceded by whitespace is found, or ``(None, text)`` otherwise.
+
+    Handles nested parens::
+        _find_trailing_paren_group("zinc acetate (Zn(CH₃COO)₂)")
+        # => ("Zn(CH₃COO)₂", "zinc acetate")
+    """
+    end = len(text)
+    while end > 0 and text[end - 1].isspace():
+        end -= 1
+
+    if end == 0 or text[end - 1] != ")":
+        return None, text
+
+    depth = 0
+    for i in range(end - 1, -1, -1):
+        if text[i] == ")":
+            depth += 1
+        elif text[i] == "(":
+            depth -= 1
+            if depth == 0:
+                # Require whitespace before the opening paren (same as \s+\()
+                if i > 0 and text[i - 1].isspace():
+                    return text[i + 1 : end], text[:i].rstrip()
+                break
+    return None, text
+
+
 class GlossaryIndex:
     """Index of alternative substances from ALTERNATIVE.tsv."""
 
@@ -47,6 +104,12 @@ class GlossaryIndex:
 
     def load(self, tsv_path: str | Path) -> None:
         """Parse the ALTERNATIVE.tsv file and build the index."""
+        # Reset index dicts so load() is idempotent
+        self._exact.clear()
+        self._synonyms.clear()
+        self._fuzzy_entries.clear()
+        self._loaded = False
+
         path = Path(tsv_path)
         if not path.is_absolute():
             path = Path(__file__).resolve().parent.parent / tsv_path
@@ -63,7 +126,7 @@ class GlossaryIndex:
             alt_col_idx = 2
 
             for row in reader:
-                if not row or not row[alt_col_idx].strip():
+                if not row or len(row) <= alt_col_idx or not row[alt_col_idx].strip():
                     continue
                 raw_class = row[alt_class_idx].strip()
                 subclass = row[subclass_idx].strip() if len(row) > subclass_idx else ""
@@ -81,6 +144,14 @@ class GlossaryIndex:
         Returns a dict with keys: standard_name, class, subclass, match_source.
         Always returns a dict — when not found class is 'Other'.
         """
+        if not name.strip():
+            return {
+                "standard_name": name,
+                "class": "Other",
+                "subclass": "",
+                "match_source": "Other_未匹配",
+            }
+
         match = self._exact.get(name)
         if match is not None:
             return dict(match, match_source="Exact_匹配")
@@ -160,7 +231,7 @@ class GlossaryIndex:
             else:
                 items_part = seg
 
-            raw_items = [i.strip() for i in items_part.split(",")]
+            raw_items = _split_commas_smart(items_part)
             for raw in raw_items:
                 if not raw:
                     continue
@@ -186,11 +257,9 @@ class GlossaryIndex:
             self._synonyms[synonym] = standard_name
             return
 
-        # --- trailing (ABBR) pattern ---
-        paren_match = re.search(r"\s+\(([^)]+)\)\s*$", raw)
-        if paren_match:
-            abbr = paren_match.group(1)
-            canonical_name = raw[: paren_match.start()].strip()
+        # --- trailing (ABBR) pattern (handles nested parens) ---
+        abbr, canonical_name = _find_trailing_paren_group(raw)
+        if abbr is not None:
 
             if grouped:
                 # In element-grouped format, keep abbreviation in standard_name

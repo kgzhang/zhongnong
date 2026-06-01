@@ -26,10 +26,12 @@ def test_synonym_mapping():
 def test_fuzzy_match():
     gi = GlossaryIndex()
     gi.load("ALTERNATIVE.tsv")
-    result = gi.lookup("zinc oxide")
+    # "zinc oxyde" is a typo — requires fuzzy matching to resolve
+    result = gi.lookup("zinc oxyde")
     assert result is not None
     assert result["standard_name"] == "zinc oxide (ZnO)"
     assert result["class"] == "Trace_Element"
+    assert result["match_source"] == "Fuzzy_模糊匹配"
 
 
 def test_not_found_returns_other():
