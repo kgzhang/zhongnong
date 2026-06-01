@@ -136,7 +136,7 @@ def stage3_extract_results(article: dict, entities: dict) -> list[dict]:
     )
 
     # Normalize each result
-    from src.stage3_result_extract import _normalize_result_values
+    from src.utils import normalize_result_values
     for r in results:
         _normalize_result_values(r)
         r.setdefault("indicator_abbreviation", "")

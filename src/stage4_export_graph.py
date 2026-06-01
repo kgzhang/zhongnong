@@ -13,7 +13,7 @@ from typing import Optional
 from src.config import settings
 from src.entity_id import global_id, local_id, EvidenceRegistry, evidence_id
 from src.glossary import GlossaryIndex
-from src.stage2_entity_extract import normalize_dose_unit
+from src.utils import normalize_dose_unit
 
 logger = logging.getLogger(__name__)
 
