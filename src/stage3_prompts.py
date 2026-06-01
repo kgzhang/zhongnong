@@ -1,5 +1,19 @@
 """Stage 3 prompt templates for result extraction."""
 
+MAX_INPUT_CHARS = 6000
+
+
+def _truncate_stage3(text: str) -> str:
+    """Truncate results/discussion text to avoid exceeding context limits."""
+    if not text or len(text) <= MAX_INPUT_CHARS:
+        return text or ""
+    truncated = text[:MAX_INPUT_CHARS]
+    last_period = truncated.rfind(". ")
+    if last_period > MAX_INPUT_CHARS // 2:
+        return truncated[:last_period + 1] + "\n\n[... truncated for length ...]"
+    return truncated + "\n\n[... truncated for length ...]"
+
+
 SYSTEM_PROMPT_RESULT = """You are an expert in swine nutrition research literature.
 You extract ALL reported statistical results from the Results and Discussion sections with complete accuracy.
 You strictly follow the extraction rules and output valid JSON matching the schema.
@@ -63,10 +77,25 @@ def build_result_prompt(
 ### Available Tissue Sites:
 {chr(10).join(tissue_lines) if tissue_lines else '(none)'}
 
+### OUTPUT FORMAT:
+For each result, use these EXACT JSON keys:
+- "indicator_abbreviation": the abbreviation from Available Indicators (e.g., "ADG", "TNF-a")
+- "tissue_site": the site name from Available Tissue Sites (e.g., "jejunal mucosa")
+- "direction": "increased" or "decreased" or "no_significant_change"
+- "relation_type": "increases"/"decreases"/"upregulates"/"downregulates"/"enriches"/"depletes"/"affects"
+- "significance_level": "p_less_0.01"/"p_less_0.05"/"trend_0.05_0.1"/"not_significant"
+- "p_value": numeric value or null
+- "p_value_original_text": the P-value as written in the paper (e.g., "P < 0.05")
+- "effect_size": fold change or mean difference (or null)
+- "time_point": measurement time point (or null)
+- "compared_to_group": the control group name used for comparison
+- "evidence_text": 1-2 EXACT sentences from the paper
+- "source_location": where in the paper (e.g., "Results 3.1", "Figure 2")
+
 ### Results Section:
-{results_text}
+{_truncate_stage3(results_text)}
 
 ### Discussion Section:
-{discussion_text}
+{_truncate_stage3(discussion_text)}
 
-Output valid JSON matching the schema. Include EVERY statistically compared result."""
+Output valid JSON with "doi" and "results" array. Include EVERY statistically compared result."""

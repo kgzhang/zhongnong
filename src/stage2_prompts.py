@@ -2,6 +2,20 @@
 from src.glossary import GlossaryIndex
 from src.config import ALTERNATIVE_TSV
 
+MAX_INPUT_CHARS = 8000  # Truncate input text to avoid exceeding LLM context limits
+
+
+def _truncate(text: str, max_chars: int = MAX_INPUT_CHARS) -> str:
+    """Truncate text to max_chars, keeping whole sentences."""
+    if len(text) <= max_chars:
+        return text
+    truncated = text[:max_chars]
+    # Try to break at last sentence boundary
+    last_period = truncated.rfind(". ")
+    if last_period > max_chars // 2:
+        return truncated[:last_period + 1] + "\n\n[... text truncated for length ...]"
+    return truncated + "\n\n[... text truncated for length ...]"
+
 
 def _load_glossary_summary() -> str:
     """Build a compact summary of the glossary for inclusion in prompts."""
@@ -24,6 +38,14 @@ SYSTEM_PROMPT_ENTITY = """You are an expert in swine nutrition and antibiotic al
 You extract structured entities from the Materials and Methods sections of scientific papers with extreme precision.
 All numeric values must be copied exactly as they appear. Never round or approximate.
 Always copy evidence sentences verbatim from the source text. Never paraphrase evidence.
+
+CRITICAL OUTPUT FORMAT RULES:
+- For Module C: Use keys "alternatives" (array), "composite_products" (array), "doi" (string). NOT "entities".
+- For Module A: Use keys "swine_model", "swine", "interventions", "control_groups".
+- For Module B: Use keys "tissue_sites", "indicators", "methods".
+- For alternative items: Use "standard_name" (NOT "name"), "alternative_class" (NOT "type"), "evidence_text" (NOT "evidence").
+- Always include empty arrays "[]" rather than omitting a key.
+
 Output only valid JSON matching the schema."""
 
 
@@ -55,7 +77,7 @@ def build_module_c_prompt(methods_text: str) -> str:
 4. **Evidence**: For each entity, copy the exact 1-3 sentences from the source text describing the substance and its use. Include the section/paragraph location.
 
 ### Source Text (Materials and Methods):
-{methods_text}
+{_truncate(methods_text)}
 
 Output valid JSON matching the schema exactly."""
 
@@ -93,7 +115,7 @@ def build_module_a_prompt(methods_text: str) -> str:
 ### Do NOT invent or infer values.
 
 ### Source Text (Materials and Methods):
-{methods_text}
+{_truncate(methods_text)}
 
 Output valid JSON matching the schema exactly."""
 
@@ -137,6 +159,6 @@ Diarrhea rate, mortality, organ indices, intestinal permeability (D-lactate, DAO
 ### Also extract all Tissue_Site and Method entities separately.
 
 ### Source Text (Materials and Methods):
-{methods_text}
+{_truncate(methods_text)}
 
 Output valid JSON matching the schema exactly."""

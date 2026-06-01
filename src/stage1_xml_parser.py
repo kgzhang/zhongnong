@@ -167,7 +167,7 @@ def parse_xml_to_sections(xml_path: str) -> dict[str, Any]:
         meta["title"] = _normalise_text(title_el.text) if title_el is not None else ""
 
         journal_meta = root.find(".//journal-meta")
-        journal_el = journal_meta.find("journal-title") if journal_meta is not None else None
+        journal_el = journal_meta.find(".//journal-title") if journal_meta is not None else None
         meta["journal"] = _normalise_text(journal_el.text) if journal_el is not None else ""
 
         pub_date = _get_pub_date(article_meta)
@@ -197,7 +197,7 @@ def parse_xml_to_sections(xml_path: str) -> dict[str, Any]:
     # ------------------------------------------------------------------
     # 3. Body sections
     # ------------------------------------------------------------------
-    body_el = root.find("body")
+    body_el = root.find(".//body")  # .// handles <pmc-articleset> wrapper
     sections: dict[str, Any] = {"abstract": abstract}
 
     if body_el is not None:

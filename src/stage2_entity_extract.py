@@ -54,12 +54,55 @@ def entities_to_tsv_rows(entities: list) -> list[dict]:
 
 
 def postprocess_alternatives(data: dict) -> dict:
-    """Deduplicate alternatives within same DOI by standard_name (case-insensitive)."""
+    """Deduplicate alternatives and set defaults. Resilient to LLM key-name variations."""
+    # Normalize LLM output: map common alternative key names to 'alternatives'
+    for llm_key in ("entities", "substances", "compounds"):
+        if llm_key in data and not data.get("alternatives"):
+            data["alternatives"] = data.pop(llm_key)
+
+    # Default empty fields
+    data.setdefault("alternatives", [])
+    data.setdefault("composite_products", [])
+    data.setdefault("warnings", [])
+
+    # Normalize individual alternative fields
+    for alt in data.get("alternatives", []):
+        # Map 'name' -> 'standard_name'
+        if "name" in alt and "standard_name" not in alt:
+            alt["standard_name"] = alt.pop("name")
+        # Map 'type' or 'class' -> 'alternative_class'
+        if "type" in alt and "alternative_class" not in alt:
+            val = alt.pop("type")
+            if val == "Alternative":
+                pass  # This is entity_type, not class — keep looking
+            else:
+                alt["alternative_class"] = val
+        # Map 'evidence' -> 'evidence_text'
+        if "evidence" in alt and "evidence_text" not in alt:
+            alt["evidence_text"] = alt.pop("evidence")
+        # Ensure required fields exist
+        alt.setdefault("standard_name", alt.get("name", "unknown"))
+        alt.setdefault("alternative_class", "Other")
+        alt.setdefault("evidence_text", "")
+        alt.setdefault("source_location", "")
+        alt.setdefault("match_source", "Other_未匹配")
+
+    # Normalize composite_products
+    for cp in data.get("composite_products", []):
+        if "name" in cp and "product_name" not in cp:
+            cp["product_name"] = cp.pop("name")
+        cp.setdefault("product_name", cp.get("name", "unknown"))
+        cp.setdefault("evidence_text", "")
+        cp.setdefault("source_location", "")
+        if "components" not in cp:
+            cp["components"] = []
+
+    # Deduplicate
     seen = set()
     deduped = []
     for alt in data.get("alternatives", []):
         key = alt.get("standard_name", "").lower().strip()
-        if key not in seen:
+        if key and key not in seen:
             seen.add(key)
             deduped.append(alt)
     data["alternatives"] = deduped

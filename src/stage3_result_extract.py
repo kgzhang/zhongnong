@@ -14,6 +14,102 @@ from src.stage3_prompts import build_result_prompt, SYSTEM_PROMPT_RESULT
 
 logger = logging.getLogger(__name__)
 
+# LLM output key name mappings (LLM may use different keys than our schema)
+_RESULT_FIELD_MAP = {
+    "indicator": "indicator_abbreviation",
+    "indicator_name": "indicator_abbreviation",
+    "indicator_abbr": "indicator_abbreviation",
+    "parameter": "indicator_abbreviation",
+    "tissue": "tissue_site",
+    "site": "tissue_site",
+    "location": "tissue_site",
+    "change": "direction",
+    "trend": "direction",
+    "effect": "direction",
+    "p": "p_value",
+    "p_val": "p_value",
+    "pvalue": "p_value",
+    "p_text": "p_value_original_text",
+    "p_value_text": "p_value_original_text",
+    "sig_level": "significance_level",
+    "significance": "significance_level",
+    "signif": "significance_level",
+    "effect_size_val": "effect_size",
+    "fold_change": "effect_size",
+    "time": "time_point",
+    "timepoint": "time_point",
+    "evidence": "evidence_text",
+    "evid": "evidence_text",
+    "source": "source_location",
+    "location_text": "source_location",
+    "compared_to": "compared_to_group",
+    "comparison_group": "compared_to_group",
+    "baseline": "compared_to_group",
+    "control": "compared_to_group",
+    "rel": "relation_type",
+    "relation": "relation_type",
+    "type": "relation_type",
+    "category": "indicator_category",
+}
+
+
+def _normalize_result_fields(results: list[dict]) -> list[dict]:
+    """Map LLM's field names to our schema's expected keys."""
+    normalized = []
+    for r in results:
+        nr = {}
+        for k, v in r.items():
+            mapped_key = _RESULT_FIELD_MAP.get(k, k)
+            nr[mapped_key] = v
+        # Default required fields
+        nr.setdefault("direction", "no_significant_change")
+        nr.setdefault("relation_type", "affects")
+        nr.setdefault("significance_level", "not_significant")
+        nr.setdefault("evidence_text", "")
+        nr.setdefault("source_location", "")
+        nr.setdefault("compared_to_group", "")
+        nr.setdefault("tissue_site", "")
+        # Normalize value variations from LLM
+        _normalize_result_values(nr)
+        normalized.append(nr)
+    return normalized
+
+
+def _normalize_result_values(r: dict) -> None:
+    """Normalize LLM value variations to match our enum/type expectations."""
+    import re
+    # Direction
+    d = str(r.get("direction", "")).strip().lower()
+    if d in ("decreases", "decrease", "reduces", "reduce", "lowered", "lower"):
+        r["direction"] = "decreased"
+    elif d in ("increases", "increase", "raises", "raise", "elevated", "elevate"):
+        r["direction"] = "increased"
+    elif d in ("no_change", "no change", "unchanged", "ns"):
+        r["direction"] = "no_significant_change"
+    # Significance
+    s = str(r.get("significance_level", "")).strip().lower()
+    if s in ("p<0.01", "p < 0.01", "highly significant", "highly_significant"):
+        r["significance_level"] = "p_less_0.01"
+    elif s in ("p<0.05", "p < 0.05", "significant", "sig"):
+        r["significance_level"] = "p_less_0.05"
+    elif s in ("trend", "tendency", "0.05<p<0.10", "0.05 < p < 0.10"):
+        r["significance_level"] = "trend_0.05_0.1"
+    elif s in ("ns", "not significant", "non-significant", "n.s."):
+        r["significance_level"] = "not_significant"
+    # p_value: parse "P=0.023" → 0.023, "0.05<P<0.10" → None
+    p = r.get("p_value")
+    if isinstance(p, str):
+        m = re.search(r'=\s*([0-9.]+)', str(p))
+        r["p_value"] = float(m.group(1)) if m else None
+    # Relation type
+    rel = str(r.get("relation_type", "")).strip().lower()
+    if rel in ("decreases", "decrease", "reduced"): r["relation_type"] = "decreases"
+    elif rel in ("increases", "increase", "elevated"): r["relation_type"] = "increases"
+    elif rel in ("up", "upregulated", "up-regulates"): r["relation_type"] = "upregulates"
+    elif rel in ("down", "downregulated", "down-regulates"): r["relation_type"] = "downregulates"
+    elif rel in ("enriched", "enrichment"): r["relation_type"] = "enriches"
+    elif rel in ("depleted", "depletion"): r["relation_type"] = "depletes"
+
 
 def align_result_to_indicator(result: dict, indicators: list[Indicator]) -> Optional[str]:
     """Match result's indicator_abbreviation to an Indicator entity. Returns entity_id or None."""
@@ -206,7 +302,10 @@ async def _extract_results(
 
     prompt = build_result_prompt(results_text, discussion_text, indicators, controls, tissues)
     result = llm.extract_json(prompt, schema, system_prompt=SYSTEM_PROMPT_RESULT)
-    logger.info("Pass 1 done: %s — %d results", doi, len(result.get("results", [])))
+    # Normalize LLM field names to our schema
+    raw_results = result.get("results", [])
+    result["results"] = _normalize_result_fields(raw_results)
+    logger.info("Pass 1 done: %s — %d results", doi, len(result["results"]))
     return result
 
 

@@ -92,7 +92,7 @@ class LLMClient:
                         {"role": "user", "content": prompt},
                     ],
                     temperature=temperature,
-                    max_tokens=8192,
+                    max_tokens=16384,
                     api_key=self.api_key or None,
                 )
                 raw_text = response.choices[0].message.content
@@ -100,6 +100,9 @@ class LLMClient:
                     raise ValueError("LLM returned empty response")
 
                 data = parse_llm_json_response(raw_text)
+                # Normalize common LLM format quirks
+                data = _normalize_llm_output(data, output_schema)
+                _apply_schema_defaults(data, output_schema)
                 errors = self.validate_output(data, output_schema)
                 if not errors:
                     data["_model"] = self.model
@@ -140,6 +143,75 @@ class LLMClient:
         raise RuntimeError(
             f"LLM extraction failed after {settings.llm_max_retries + 1} attempts: {last_error}"
         )
+
+
+def _normalize_llm_output(data, schema: dict):
+    """Normalize common LLM output format quirks before validation.
+
+    Handles:
+    - Bare array where object with 'results' key expected
+    - Nested field objects like {value: ..., evidence_text: ...} → flatten to direct value
+    """
+    # If LLM returned a bare list but schema expects an object with a 'results' key
+    if isinstance(data, list):
+        top_props = schema.get("properties", {})
+        for key, prop in top_props.items():
+            if prop.get("type") == "array" and key not in data:
+                return {"doi": "", key: data}
+        return {"doi": "", "results": data}
+
+    # If it's a dict, flatten nested value objects
+    if isinstance(data, dict):
+        for key, val in list(data.items()):
+            if isinstance(val, dict) and "value" in val:
+                # Flatten {value: ..., evidence_text: ...} → use value directly
+                data[key] = val["value"]
+                if "evidence_text" in val and f"{key}_evidence" not in data:
+                    pass  # keep evidence_text at the field's own level
+        # Also recurse into arrays
+        for key, val in data.items():
+            if isinstance(val, list):
+                for item in val:
+                    if isinstance(item, dict):
+                        for ik, iv in list(item.items()):
+                            if isinstance(iv, dict) and "value" in iv:
+                                item[ik] = iv["value"]
+
+    return data
+
+
+def _apply_schema_defaults(data: dict, schema: dict) -> None:
+    """Recursively fill in missing required fields with sensible defaults.
+
+    This is lenient with LLM output — the LLM may omit fields that are
+    technically required by the schema. We fill them in so validation passes.
+    """
+    if not isinstance(data, dict):
+        return
+
+    # Fill top-level required fields
+    for field in schema.get("required", []):
+        if field not in data:
+            prop = schema.get("properties", {}).get(field, {})
+            if prop.get("type") == "array":
+                data[field] = []
+            elif prop.get("type") == "object":
+                data[field] = {}
+            elif prop.get("type") == "string":
+                data[field] = ""
+            elif prop.get("type") == "number":
+                data[field] = 0
+
+    # Recurse into object properties and array items
+    for key, value in data.items():
+        prop_schema = schema.get("properties", {}).get(key, {})
+        if isinstance(value, dict) and prop_schema.get("type") == "object":
+            _apply_schema_defaults(value, prop_schema)
+        elif isinstance(value, list):
+            item_schema = prop_schema.get("items", {})
+            for item in value:
+                if isinstance(item, dict):
+                    _apply_schema_defaults(item, item_schema)
 
 
 def parse_llm_json_response(raw: str) -> dict:

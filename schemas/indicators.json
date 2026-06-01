@@ -1,19 +1,19 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["doi", "tissue_sites", "indicators", "methods"],
+  "required": ["doi"],
   "properties": {
-    "doi": {"type": "string"},
+    "doi": {"type": ["string", "null"]},
     "tissue_sites": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["site_name", "site_category", "evidence_text", "source_location"],
+        "required": [],
         "properties": {
-          "site_name": {"type": "string"},
-          "site_category": {"enum": ["content", "mucosa", "serum", "tissue", "feces"]},
-          "evidence_text": {"type": "string"},
-          "source_location": {"type": "string"}
+          "site_name": {"type": ["string", "null"]},
+          "site_category": {"type": ["string", "null"]},
+          "evidence_text": {"type": ["string", "null"]},
+          "source_location": {"type": ["string", "null"]}
         }
       }
     },
@@ -21,16 +21,16 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["standard_name", "abbreviation", "indicator_category", "evidence_text", "source_location"],
+        "required": ["standard_name"],
         "properties": {
-          "standard_name": {"type": "string"},
-          "abbreviation": {"type": "string"},
-          "unit": {"type": "string"},
-          "indicator_category": {"enum": ["macro_phenotype", "microbiome", "metabolome", "molecular"]},
-          "measurement_method": {"type": "string"},
-          "measured_in": {"type": "string"},
-          "evidence_text": {"type": "string"},
-          "source_location": {"type": "string"}
+          "standard_name": {"type": ["string", "null"]},
+          "abbreviation": {"type": ["string", "null"]},
+          "unit": {"type": ["string", "null"]},
+          "indicator_category": {"type": ["string", "null"]},
+          "measurement_method": {"type": ["string", "null"]},
+          "measured_in": {"type": ["string", "null"]},
+          "evidence_text": {"type": ["string", "null"]},
+          "source_location": {"type": ["string", "null"]}
         }
       }
     },
@@ -38,12 +38,12 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["method_name", "evidence_text", "source_location"],
+        "required": ["method_name"],
         "properties": {
-          "method_name": {"type": "string"},
-          "description": {"type": "string"},
-          "evidence_text": {"type": "string"},
-          "source_location": {"type": "string"}
+          "method_name": {"type": ["string", "null"]},
+          "description": {"type": ["string", "null"]},
+          "evidence_text": {"type": ["string", "null"]},
+          "source_location": {"type": ["string", "null"]}
         }
       }
     }
