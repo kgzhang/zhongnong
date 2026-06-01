@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<article>
+  <front>
+    <article-meta>
+      <article-id pub-id-type="doi">10.1016/test.2024.001</article-id>
+      <article-id pub-id-type="pmid">12345678</article-id>
+      <title-group><article-title>Effects of thymol on piglet growth</article-title></title-group>
+      <abstract>
+        <sec><p>Background: Antibiotics are widely used in swine production.</p></sec>
+        <sec><p>Results show that thymol improved ADG by 15%.</p></sec>
+        <sec><p>In conclusion, dietary thymol supplementation significantly improved growth performance and gut health in weaned piglets under E. coli challenge.</p></sec>
+      </abstract>
+      <pub-date date-type="pub"><year>2024</year><month>3</month><day>15</day></pub-date>
+    </article-meta>
+    <journal-meta>
+      <journal-title>Journal of Animal Science</journal-title>
+    </journal-meta>
+  </front>
+  <body>
+    <sec id="s1"><title>Introduction</title><p>Antibiotics have been widely used...</p></sec>
+    <sec id="s2"><title>Materials and Methods</title>
+      <sec id="s2a"><title>2.1 Animals and Diets</title><p>A total of 72 weaned barrows (Duroc x Landrace x Yorkshire, 21 d of age, initial BW 7.5 kg) were randomly allocated.</p></sec>
+      <sec id="s2b"><title>2.2 Sample Collection</title><p>At the end of the 28-day experiment, jejunal mucosa and cecal content were collected.</p></sec>
+    </sec>
+    <sec id="s3"><title>Results</title>
+      <sec id="s3a"><title>3.1 Growth Performance</title><p>Dietary thymol significantly increased ADG compared with the challenged control (P &lt; 0.05).</p></sec>
+    </sec>
+    <sec id="s4"><title>Discussion</title><p>Our findings demonstrate that thymol is a promising alternative to antibiotics...</p></sec>
+  </body>
+</article>
