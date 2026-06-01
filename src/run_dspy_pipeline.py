@@ -157,6 +157,15 @@ def stage3_extract_results(article: dict, entities: dict) -> list[dict]:
 # Stage 4: Validation + TSV + Neo4j export
 # ---------------------------------------------------------------------------
 
+def _clean_entity_dir(doi_safe: str) -> None:
+    """Remove entity directory for a skipped/gated article."""
+    import shutil
+    d = settings.entities_dir / doi_safe
+    if d.exists():
+        shutil.rmtree(d)
+        logger.debug("Cleaned stale entity dir: %s", doi_safe)
+
+
 def stage4_export(all_entities: list[dict], all_results: list[dict]):
     """Validate entities/results and export TSV + Neo4j Cypher files."""
     from dataclasses import asdict
@@ -584,6 +593,22 @@ def run_full_pipeline(xml_dir: Optional[str] = None, skip_stage1: bool = False) 
     """
     ensure_dirs()
 
+    # Pre-clean: remove any entity dirs without valid alternatives (from previous runs)
+    import shutil
+    for d in settings.entities_dir.iterdir():
+        if not d.is_dir() or d.name.startswith("_"):
+            continue
+        alt_file = d / "alternatives.json"
+        if not alt_file.exists():
+            shutil.rmtree(d)
+            continue
+        try:
+            data = json.loads(alt_file.read_text())
+            if len(data.get("alternatives", [])) == 0:
+                shutil.rmtree(d)
+        except Exception:
+            shutil.rmtree(d)
+
     # Stage 1: XML parsing
     articles = []
     if not skip_stage1:
@@ -614,6 +639,7 @@ def run_full_pipeline(xml_dir: Optional[str] = None, skip_stage1: bool = False) 
         entities = stage2_extract_entities(article)
         if entities is None:
             logger.info("  SKIPPED by gate check")
+            _clean_entity_dir(doi_safe)
             continue
         entities["doi"] = doi
 
