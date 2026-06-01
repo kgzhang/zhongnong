@@ -6,15 +6,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from llm_client import LLMClient, parse_llm_json_response, resolve_model
 
 
-def test_resolve_model_anthropic():
-    """Short model names get anthropic/ prefix for litellm."""
-    assert resolve_model("claude-sonnet-4-20250514") == "anthropic/claude-sonnet-4-20250514"
+def test_resolve_model_deepseek_default():
+    """Short model names get deepseek/ prefix for litellm (new default)."""
+    assert resolve_model("deepseek-chat") == "deepseek/deepseek-chat"
 
 
 def test_resolve_model_prefixed_passthrough():
     """Already-prefixed model names pass through unchanged."""
     assert resolve_model("openai/gpt-4o") == "openai/gpt-4o"
-    assert resolve_model("anthropic/claude-opus-4-20250514") == "anthropic/claude-opus-4-20250514"
+    assert resolve_model("anthropic/claude-sonnet-4-20250514") == "anthropic/claude-sonnet-4-20250514"
+    assert resolve_model("deepseek/deepseek-reasoner") == "deepseek/deepseek-reasoner"
 
 
 def test_parse_valid_json():

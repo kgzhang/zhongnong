@@ -25,15 +25,16 @@ def resolve_model(model_name: str) -> str:
     """Resolve shorthand model names to litellm provider/model format.
 
     If the model already has a provider prefix (contains '/'), return as-is.
-    Otherwise, prefix with 'anthropic/' as the default provider.
+    Otherwise, prefix with 'deepseek/' as the default provider.
 
     Examples:
-        claude-sonnet-4-20250514  ->  anthropic/claude-sonnet-4-20250514
-        openai/gpt-4o             ->  openai/gpt-4o
+        deepseek-chat              ->  deepseek/deepseek-chat
+        openai/gpt-4o              ->  openai/gpt-4o
+        anthropic/claude-sonnet    ->  anthropic/claude-sonnet
     """
     if "/" in model_name:
         return model_name
-    return f"anthropic/{model_name}"
+    return f"deepseek/{model_name}"
 
 
 class LLMClient:
@@ -41,7 +42,13 @@ class LLMClient:
 
     def __init__(self, model: Optional[str] = None):
         self.model = resolve_model(model or settings.llm_model)
-        self.api_key = settings.anthropic_api_key
+        # Use provider-specific API key based on model prefix
+        if self.model.startswith("deepseek/"):
+            self.api_key = settings.deepseek_api_key
+        elif self.model.startswith("anthropic/"):
+            self.api_key = settings.anthropic_api_key
+        else:
+            self.api_key = settings.deepseek_api_key or settings.anthropic_api_key
 
     @staticmethod
     def load_schema(schema_path: str) -> dict:

@@ -11,11 +11,28 @@ class TestSettings:
     def test_default_values(self):
         """Defaults are sensible when no env vars set."""
         from config import settings
-        assert settings.llm_model == "claude-sonnet-4-20250514"
+        assert settings.llm_model == "deepseek/deepseek-chat"
         assert settings.llm_max_retries == 2
         assert settings.batch_size == 50
         assert settings.max_concurrent == 12
         assert isinstance(settings.project_root, Path)
+
+    def test_api_key_fields(self):
+        """API key fields exist and .env file is loaded."""
+        from config import settings
+        assert hasattr(settings, "deepseek_api_key")
+        assert hasattr(settings, "anthropic_api_key")
+        # .env file provides values; verify they're loaded (non-empty)
+        assert len(settings.deepseek_api_key) > 0, ".env DEEPSEEK_API_KEY not loaded"
+
+    def test_env_file_loaded(self, tmp_path, monkeypatch):
+        """.env file is loaded automatically by pydantic-settings."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("LLM_MODEL=deepseek/deepseek-reasoner\nDEEPSEEK_API_KEY=sk-test-key\n")
+        # Override the env_file path — tricky since it's set at class level.
+        # Instead, verify that SettingsConfigDict points to .env
+        from config import Settings
+        assert Settings.model_config.get("env_file") == ".env"
 
     def test_env_override(self, monkeypatch):
         """Environment variables override defaults."""
@@ -72,18 +89,21 @@ class TestSettings:
             "ENTITIES_DIR", "RELATIONS_DIR", "OUTPUT_TSV_DIR",
             "OUTPUT_NEO4J_DIR", "SCHEMAS_DIR",
             "ALTERNATIVE_TSV", "SCHEMA_TSV",
-            "ANTHROPIC_API_KEY", "LLM_MODEL", "LLM_MAX_RETRIES",
-            "BATCH_SIZE", "MAX_CONCURRENT",
+            "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "LLM_MODEL",
+            "LLM_MAX_RETRIES", "BATCH_SIZE", "MAX_CONCURRENT",
             "ENTREZ_EMAIL", "ENTREZ_API_KEY",
             "ensure_dirs", "validate",
         ]
         for attr in attrs:
             assert hasattr(config, attr), f"Missing backward-compat export: {attr}"
 
-    def test_validate_checks_email(self, caplog):
+    def test_validate_checks_email(self, caplog, monkeypatch):
         """validate() logs warning when ENTREZ_EMAIL is empty."""
         import logging
-        from config import validate
+        from config import settings, validate
+        monkeypatch.setattr(settings, "entrez_email", "")
+        monkeypatch.setattr(settings, "deepseek_api_key", "")
+        monkeypatch.setattr(settings, "anthropic_api_key", "")
         with caplog.at_level(logging.WARNING):
             validate()
         assert "ENTREZ_EMAIL" in caplog.text

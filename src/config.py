@@ -52,8 +52,9 @@ class Settings(BaseSettings):
     def schema_tsv(self) -> Path: return self.project_root / "SCHEMA.tsv"
 
     # -- LLM settings ----------------------------------------------------
-    anthropic_api_key: str = Field(default="", description="Anthropic API key")
-    llm_model: str = Field(default="claude-sonnet-4-20250514")
+    deepseek_api_key: str = Field(default="", description="DeepSeek API key")
+    anthropic_api_key: str = Field(default="", description="Anthropic API key (fallback)")
+    llm_model: str = Field(default="deepseek/deepseek-chat")
     llm_max_retries: int = Field(default=2, ge=0, le=10)
     batch_size: int = Field(default=50, ge=1, le=500)
     max_concurrent: int = Field(default=12, ge=1, le=50)
@@ -83,6 +84,7 @@ ALTERNATIVE_TSV = settings.alternative_tsv
 SCHEMA_TSV = settings.schema_tsv
 
 ANTHROPIC_API_KEY = settings.anthropic_api_key
+DEEPSEEK_API_KEY = settings.deepseek_api_key
 LLM_MODEL = settings.llm_model
 LLM_MAX_RETRIES = settings.llm_max_retries
 BATCH_SIZE = settings.batch_size
@@ -106,5 +108,5 @@ def validate() -> None:
     """Print warnings for misconfigured settings."""
     if not settings.entrez_email:
         logger.warning("ENTREZ_EMAIL not set. PubMed API calls may be rate-limited.")
-    if not settings.anthropic_api_key:
-        logger.warning("ANTHROPIC_API_KEY not set. LLM calls will fail.")
+    if not settings.deepseek_api_key and not settings.anthropic_api_key:
+        logger.warning("No LLM API key set (DEEPSEEK_API_KEY or ANTHROPIC_API_KEY). LLM calls will fail.")
