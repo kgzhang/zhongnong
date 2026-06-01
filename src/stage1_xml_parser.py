@@ -321,3 +321,68 @@ def _strip_ns(el):
             el.attrib[new_attr] = el.attrib.pop(attr)
     for child in el:
         _strip_ns(child)
+
+
+def run_stage1(literature_pool_path: str = "data/literature_pool.tsv",
+               xml_dir: str = "data/xml") -> str:
+    """Batch process all articles in the literature pool.
+
+    Reads the literature pool TSV, finds corresponding XML files,
+    parses each one, and writes structured_sections/{doi_safe}.json.
+
+    Returns path to the output directory.
+    """
+    import csv
+    import json
+    from pathlib import Path
+    from src.config import SECTIONS_DIR
+
+    pool = []
+    try:
+        with open(literature_pool_path, "r", encoding="utf-8") as f:
+            reader = csv.DictReader(f, delimiter="\t")
+            for row in reader:
+                pool.append(row)
+    except FileNotFoundError:
+        print(f"Literature pool not found: {literature_pool_path}")
+        return ""
+
+    xml_dir_path = Path(xml_dir)
+    output_dir = Path(SECTIONS_DIR)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    success = 0
+    failed = []
+
+    for article in pool:
+        doi = article.get("doi", "")
+        doi_safe = doi.replace("/", "_").replace(":", "_") if doi else article.get("pmid", "unknown")
+        out_path = output_dir / f"{doi_safe}.json"
+
+        if out_path.exists():
+            success += 1
+            continue
+
+        xml_path = xml_dir_path / f"{doi_safe}.xml"
+        if not xml_path.exists():
+            candidates = list(xml_dir_path.glob(f"*{doi_safe[:30]}*"))
+            if candidates:
+                xml_path = candidates[0]
+            else:
+                failed.append({"doi": doi, "reason": "XML file not found"})
+                continue
+
+        try:
+            result = parse_xml_to_sections(str(xml_path))
+            with open(out_path, "w", encoding="utf-8") as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+            success += 1
+        except Exception as e:
+            failed.append({"doi": doi, "reason": str(e)})
+
+    fail_path = output_dir / "_failures.json"
+    with open(fail_path, "w", encoding="utf-8") as f:
+        json.dump(failed, f, ensure_ascii=False, indent=2)
+
+    print(f"Stage 1 complete: {success} parsed, {len(failed)} failed")
+    return str(output_dir)
