@@ -1,0 +1,15 @@
+[project]
+name = "zhongnong-kg"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "lxml>=5.3",
+    "pandas>=2.2",
+    "jsonschema>=4.23",
+    "anthropic>=0.42",
+    "biopython>=1.84",
+    "httpx>=0.28",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.25"]
