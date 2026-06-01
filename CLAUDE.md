@@ -1,0 +1,1 @@
+Use uv and venv in current project root for python programing.

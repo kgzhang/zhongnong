@@ -1,0 +1,54 @@
+Alternative_Class (一级分类)	Subclass (二级分类)	Alternative (具体物质)	备注	互斥说明
+Plant_Extract	Volatile oils and Terpenoids	thymol (THY), carvacrol (CAR), eugenol (EUG), cinnamaldehyde (CIN), menthol, limonene, linalool, geraniol, citronellol, anethole, terpinen-4-ol, β-sitosterol, campesterol, stigmasterol, β-carotene, astaxanthin	植物次生代谢产物直接作用于病原菌（膜破坏、抑制酶活性）或调节宿主免疫/抗炎，非肽、非多糖、非小分子有机酸	"1、仅包含非肽、非多糖、非小分子酸化剂的植物源成分；
+2、有机酸中只有常用作饲料酸化剂的（甲酸、乙酸、丙酸、丁酸、乳酸、柠檬酸、苯甲酸等）才归入Organic_Acid，其他植物源有机酸（如绿原酸、咖啡酸）归入此类；
+3、植物源肽归入Bioactive Peptides；
+4、植物源多糖归入Polysaccharides；
+5、所有萜类（包括单萜酚如百里香酚、香芹酚、丁香酚等）统一归入“Volatile oils and Terpenoids”；
+6、“Phenols and Flavonoids”仅包含非萜骨架的酚类及黄酮类（如绿原酸、槲皮素、儿茶素、白藜芦醇、大豆苷元等）"
+Plant_Extract	Phenols and Flavonoids	curcumin, quercetin, kaempferol, apigenin, luteolin, baicalin, naringenin, catechins (EGCG), resveratrol, chlorogenic acid (CGA), ferulic acid, caffeic acid, rosmarinic acid, gallic acid, tannic acid, condensed tannins (proanthocyanidins), daidzein, genistein, icariin, eucommia flavonoids, alfalfa flavonoids, perilla flavonoids, dihydromyricetin (DMY), phloridzin, garcinol, proanthocyanidins, puerarin, luteolin-7-O-glucoside, carnosic acid, carnosol, xanthophyll, capsanthin		
+Plant_Extract	Alkaloids	berberine, sanguinarine, chelerythrine, piperine, caffeine, theobromine, solanine, tomatine, betaine		
+Plant_Extract	Saponins	ginsenosides, astragalosides, glycyrrhizin (glycyrrhizic acid), diosgenin, saikosaponins, alfalfa saponins, yucca saponins		
+Plant_Extract	Other components	allicin, alliin, sinigrin, sulforaphane, capsaicin, gingerol, shogaol, artemisinin		
+Trace_Element	Inorganic trace elements	"Iron (Fe): ferrous sulfate (FeSO₄), ferrous chloride (FeCl₂), ferric chloride (FeCl₃), ferrous carbonate (FeCO₃), ferrous citrate, ferrous fumarate, ferrous lactate, ferric oxide (Fe₂O₃)；
+Zinc (Zn): zinc oxide (ZnO), zinc sulfate (ZnSO₄), zinc chloride (ZnCl₂), zinc carbonate (ZnCO₃), zinc acetate (Zn(CH₃COO)₂), basic zinc chloride (Zn₅(OH)₈Cl₂)；
+Copper (Cu): copper sulfate (CuSO₄), copper chloride (CuCl₂), basic copper chloride (Cu₂(OH)₃Cl), copper(II) oxide (CuO)；
+Manganese (Mn): manganese sulfate (MnSO₄), manganese chloride (MnCl₂), manganese oxide (MnO), manganese carbonate (MnCO₃), manganese hydrogen phosphate (MnHPO₄)；
+Cobalt (Co): cobalt chloride (CoCl₂), cobalt sulfate (CoSO₄), cobalt acetate (Co(CH₃COO)₂)；
+Iodine (I): potassium iodide (KI), sodium iodide (NaI), potassium iodate (KIO₃), calcium iodate (Ca(IO₃)₂)；
+Selenium (Se): sodium selenite (Na₂SeO₃)；
+Molybdenum (Mo): sodium molybdate (Na₂MoO₄)；
+Chromium (Cr): chromium chloride (CrCl₃)"	作为酶辅因子参与免疫、抗氧化、肠道结构完整，不以直接杀菌为主（高剂量氧化锌等特例仍归此类，因其机制仍是营养调节）	
+Trace_Element	Organic trace elements	"Iron (Fe): ferrous methionine (Fe-Met), ferrous glycinate (Fe-Gly), ferrous lysinate, ferrous amino acid complex (L-lysine/glutamate), iron proteinate, yeast iron, iron polysaccharide complex (cassava, e.g., ferric cassava polysaccharide complex)；
+Zinc (Zn): zinc methionine (Zn-Met), zinc glycinate (Zn-Gly), zinc lysinate (Zn-Lys), zinc amino acid complex (L-lysine/glutamate), zinc proteinate, zinc lactate, zinc propionate, zinc hydroxymethionine analog complex (e.g., Zn-HMTBa)；
+Copper (Cu): copper methionine (Cu-Met), copper lysinate (Cu-Lys), copper glycinate (Cu-Gly), copper amino acid complex (L-lysine/glutamate), copper proteinate, copper hydroxymethionine analog complex, yeast copper；
+Manganese (Mn): manganese methionine (Mn-Met), manganese glycinate (Mn-Gly), manganese amino acid complex, manganese proteinate, manganese hydroxymethionine analog complex, yeast manganese；
+Cobalt (Co): cobalt glucoheptonateSelenium (Se): selenomethionine (Se-Met), selenium yeast (Se-Yeast)；
+Chromium (Cr): chromium methionine (Cr-Met), chromium picolinate (Cr-Pic), chromium nicotinate, chromium propionate, chromium yeast (Cr-Yeast)"		
+Organic_Acid	Short-chain fatty acids (SCFA, C1–C6)	formic acid, sodium formate, ammonium formate, calcium formate；acetic acid, sodium diacetate, calcium acetate；propionic acid, ammonium propionate, sodium propionate, calcium propionate；butyric acid, sodium butyrate；isobutyric acid, valeric acid, isovaleric acid, caproic acid, Tributyrin	"定义：传统饲料酸化剂，通过降低消化道pH及未解离分子穿透细菌膜发挥抑菌作用。
+互斥说明：仅包含常用作饲料酸化剂的有机酸。植物中天然存在的酚酸（如绿原酸）不归入此类。"	盐类以酸的功能计，同样具有酸化及抑菌作用
+Organic_Acid	Medium-chain fatty acids (MCFA, C6–C12)	caprylic acid (octanoic acid), capric acid (decanoic acid), lauric acid (dodecanoic acid), Monolaurin		
+Organic_Acid	Other carboxylic acids	lactic acid；benzoic acid, sodium benzoate； sorbic acid, sodium sorbate, potassium sorbate； fumaric acid；citric acid, potassium citrate, sodium citrate, calcium citrate；tartaric acid；malic acid		包括常见二元酸、三元酸及芳香酸
+Probiotic	Lactobacillus spp.	Lactobacillus acidophilus, Lacticaseibacillus casei (syn. Lactobacillus casei), Lactobacillus delbrueckii subsp. lactis, Lactiplantibacillus plantarum (syn. Lactobacillus plantarum), Limosilactobacillus reuteri (syn. Lactobacillus reuteri), Lactobacillus cellobiosus, Limosilactobacillus fermentum (syn. Lactobacillus fermentum), Lactobacillus delbrueckii subsp. bulgaricus, Lentilactobacillus buchneri (syn. Lactobacillus buchneri), Lacticaseibacillus paracasei (syn. Lactobacillus paracasei), Lactobacillus johnsonii, Lactobacillus cellobiosus	"仅包含益生菌活菌，不包含后生元或代谢产物，通过定植竞争、产生抑菌代谢物调节肠道菌群。
+活菌定植，竞争性排斥，产生抗菌代谢物（细菌素、有机酸等）"	
+Probiotic	Bifidobacterium spp.	Bifidobacterium bifidum, Bifidobacterium longum subsp. infantis, Bifidobacterium longum, Bifidobacterium breve, Bifidobacterium adolescentis, Bifidobacterium animalis		
+Probiotic	Enterococcus spp.	Enterococcus faecalis, Enterococcus faecium, Enterococcus lactis		
+Probiotic	Pediococcus spp.	Pediococcus acidilactici, Pediococcus pentosaceus		
+Probiotic	Streptococcus spp.	Streptococcus thermophilus		
+Probiotic	Bacillus spp.	Bacillus licheniformis, Bacillus subtilis, Bacillus lentus, Bacillus pumilus, Bacillus coagulans, Brevibacillus laterosporus		
+Probiotic	Saccharomycetes	Saccharomyces cerevisiae, Candida utilis		
+Probiotic	Clostridium butyricum	Clostridium butyricum		
+Probiotic	Propionibacteria	Propionibacterium acidipropionici		
+Polysaccharides and Oligosaccharides	Functional oligosaccharides	fructo-oligosaccharides (FOS), galacto-oligosaccharides (GOS), xylo-oligosaccharides (XOS), isomalto-oligosaccharides (IMO), mannan-oligosaccharides (MOS), mannose-oligosaccharides (same as MOS, but listed separately), galactomannan-oligosaccharides (GMOS) / galactomannooligosaccharides, low-molecular-weight chitosan (LMC), chito-oligosaccharides (COS) / chitosan-oligosaccharide / oligo-chitosan, N,O-carboxymethyl chitosan (N,O-CMC)	"不被宿主消化或具免疫调节活性的碳水化合物，作为益生元选择性促进有益菌增殖，或直接调节免疫（如β-葡聚糖）。
+所有来源于植物、微生物、动物的多糖/低聚糖，无论是否具有其他活性（如抗氧化），均归入此类"	
+Polysaccharides and Oligosaccharides	Plant polysaccharides	astragalus polysaccharide (APS), ganoderma lucidum polysaccharide (GLP), lentinan, lycium barbarum polysaccharide (LBP), angelica sinensis polysaccharide (ASP), ginseng polysaccharide (GPS), aloe vera polysaccharide (acemannan), pectin, Eucommia ulmoides polysaccharide, Medicago sativa polysaccharide (alfalfa polysaccharide)		
+Polysaccharides and Oligosaccharides	Microbial polysaccharides	yeast β-glucan (β-1,3/1,6-glucan), pullulan, xanthan gum, curdlan		
+Polysaccharides and Oligosaccharides	Animal polysaccharides	chitosan (deacetylated chitin), chitin, hyaluronic acid, heparin		
+Enzyme	Digestive enzymes	protease (e.g., acid protease, alkaline protease, neutral protease), pepsin, trypsin, chymotrypsin, amylase (α-amylase, glucoamylase), diastase (a mixture of amylases, often from malt), maltase (α-glucosidase), lipase, cellulase (endo-β-1,4-glucanase), hemicellulase, keratinase (protease specific for keratin)	"具有催化活性的蛋白质或RNA，分解抗营养因子或直接产生杀菌物质。
+溶菌酶、葡萄糖氧化酶虽具有直接抗菌功能，但因本质为酶蛋白，归入此类。谷胱甘肽（三肽）不归入酶类，而归入生物活性肽。"	
+Enzyme	Non-digestive enzymes	phytase (e.g., 3-phytase, 6-phytase), xylanase (endo-1,4-β-xylanase), β-glucanase (β-1,3-1,4-glucanase), mannanase (β-mannanase, also listed as β-mannanase), pectinase (polygalacturonase), α-galactosidase, β-galactosidase (lactase), pullulanase, feruloyl esterase (cinnamoyl esterase, releases ferulic acid from plant cell walls)		
+Enzyme	Functional enzymes	glucose oxidase (GOD, produces H₂O₂), lysozyme (muramidase, hydrolyzes peptidoglycan), superoxide dismutase (SOD), catalase (CAT), lactoperoxidase (LPO), myeloperoxidase (MPO)		
+Bioactive Peptides	Antimicrobial peptides (AMPs)	Animal-derived: defensins (e.g., β-defensin, α-defensin, pBD-1, pBD-2), cathelicidins (e.g., LL-37, protegrin-1, PR-39), histatins, lactoferricin (Lfcin), lactoferrampin, hepcidin, cecropins, magaininsPlant-derived: plant defensins (e.g., RsAFP2, MsDef1), thionins, lipid transfer proteins (LTPs), snakins, cyclotidesMicrobial-derived: nisin, pediocin, enterocin, subtilin, polymyxin B, colistin, gramicidin, bacitracinSynthetic / recombinant: synthetic AMPs (e.g., Pexiganan, MSI-78), recombinant plectasin (NZ2114)	"分子量较小（通常<10 kDa）的非酶肽类，通过膜破坏、免疫调节或信号转导发挥作用。
+所有分子量<10 kDa的非酶肽归入此类，无论来源（植物、动物、微生物）及功能（抗菌、抗氧化、免疫调节）。酶蛋白（如溶菌酶）和大的蛋白质不归入此类。谷胱甘肽虽具有抗氧化活性，但因属三肽，归入此类。"	
+Bioactive Peptides	Other regulatory peptides	glutathione (GSH), carnosine, anserine, kyotorphin, casomorphins, tuftsin, thymosin, soy peptides, casein phosphopeptides (CPP), enzymatic hydrolyzed protein peptides (e.g., peptides derived from enzymatic hydrolysis of various proteins, including soy, casein, whey, etc.)		
+Other			当文献中提及的某一种单一物质（非复合制剂）在我方标准词表中完全不存在，且无法归入任何已有标准分类时，将其分类标签标记为“Other”。该实体代表一个单一物质，而非多个物质的组合。对于标记为“Other”的物质，仍需在备注字段中保留原文的原始英文全称及缩写。	
+Composite_Product			当文献中使用的干预措施为明确的多种物质的组合（例如“植物乳杆菌+木聚糖酶”、“复合植物提取物混合物”），请按以下规则处理：首先，必须将复合制剂拆分为多个独立的组分实体，每个组分分别向标准词表进行对齐与分类归属（若某个组分不在标准词表中，则该组分标记为“Other”）；其次，将整个复合制剂整体的分类标签标记为“Composite_Product”。在数据记录中，各组分的拆分信息可通过备注字段或关联字段进行体现，例如在备注中注明“该记录为复合制剂，包含组分A、组分B”。严禁将各组分名称通过字符串拼接的方式命名（例如禁止生成“植物乳杆菌+木聚糖酶”这样的长字符串作为单一实体名）。	
