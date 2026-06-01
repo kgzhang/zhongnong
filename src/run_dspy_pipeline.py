@@ -57,8 +57,11 @@ def stage1_parse_xml(xml_dir: Optional[Path] = None) -> list[dict]:
 # Stage 2: DSPy entity extraction
 # ---------------------------------------------------------------------------
 
-def stage2_extract_entities(article: dict) -> dict:
-    """Extract all entities from one article using DSPy."""
+def stage2_extract_entities(article: dict) -> Optional[dict]:
+    """Extract entities from one article. Returns None if article should be skipped.
+
+    Gate: If Module C finds no known Alternative (only "Other"), skip the article.
+    """
     from src.dspy_extract import extract_alternatives, extract_experiment_design, extract_indicators
 
     doi = article["doi"]
@@ -66,19 +69,24 @@ def stage2_extract_entities(article: dict) -> dict:
 
     if not mm_text:
         logger.warning("No M&M text for %s — skipping", doi)
-        return {"doi": doi, "alternatives": [], "composite_products": [],
-                "swine_model": {}, "swine": [], "interventions": [], "control_groups": [],
-                "tissue_sites": [], "indicators": [], "methods": []}
+        return None
 
     logger.info("[Stage2:%s] Extracting entities...", doi[:30])
 
-    # Module C: Alternatives
+    # Module C: Alternatives — THE GATE
     alt_result = extract_alternatives(mm_text)
-    logger.info("  [C] %d alternatives, %d composites",
-                len(alt_result.get("alternatives", [])),
-                len(alt_result.get("composite_products", [])))
+    n_alt = len(alt_result.get("alternatives", []))
+    n_comp = len(alt_result.get("composite_products", []))
+    has_known = alt_result.get("has_known_alternative", False)
 
-    # Module A: Experiment design
+    logger.info("  [C] %d alternatives, %d composites (has_known=%s)", n_alt, n_comp, has_known)
+
+    # GATE CHECK: skip if no known Alternative
+    if not has_known and n_comp == 0:
+        logger.info("  -> GATE: No known alternative found. Skipping article.")
+        return None
+
+    # Module A: Experiment design (no Swine_Model)
     exp_result = extract_experiment_design(mm_text)
     sw = exp_result.get("swine", [])
     if isinstance(sw, dict):
@@ -154,7 +162,7 @@ def stage4_export(all_entities: list[dict], all_results: list[dict]):
     from dataclasses import asdict
     from src.models import (
         Alternative, AlternativeClass, CompositeProduct, Literature, Experiment,
-        SwineModel, Swine, Intervention, ControlGroup, TissueSite, Indicator, Result, Method, Relationship,
+        Swine, Intervention, ControlGroup, TissueSite, Indicator, Result, Method, Relationship,
     )
     from src.stage2_entity_extract import build_entity_id
     from src.stage4_export_tsv import write_entities_tsv
@@ -196,7 +204,6 @@ def stage4_export(all_entities: list[dict], all_results: list[dict]):
     alternatives: list[Alternative] = []
     composites: list[CompositeProduct] = []
     alt_classes: list[AlternativeClass] = []
-    swine_models: list[SwineModel] = []
     swines: list[Swine] = []
     interventions: list[Intervention] = []
     controls: list[ControlGroup] = []
@@ -219,7 +226,6 @@ def stage4_export(all_entities: list[dict], all_results: list[dict]):
 
     alt_seq = 0
     cp_seq = 0
-    sm_seq = 0
     sw_seq = 0
     int_seq = 0
     ctl_seq = 0
@@ -274,22 +280,6 @@ def stage4_export(all_entities: list[dict], all_results: list[dict]):
                             tail_entity_id=a.entity_id,
                         ))
                         break
-
-        # Swine model
-        sm = ent.get("swine_model", {})
-        if sm and sm.get("model_type"):
-            eid = build_entity_id(doi, "MOD", sm_seq)
-            sm_seq += 1
-            swine_models.append(SwineModel(
-                entity_id=eid, experiment_id=exp_id,
-                model_type=sm.get("model_type", "normal"),
-                stressor_name=sm.get("stressor_name"),
-                challenge_method=sm.get("challenge_method"),
-                challenge_dose=sm.get("challenge_dose"),
-                challenge_timing=sm.get("challenge_timing"),
-                evidence_text=sm.get("evidence_text", ""),
-                source_location=sm.get("source_location", ""),
-            ))
 
         # Swine
         for s in ent.get("swine", []):
@@ -407,6 +397,44 @@ def stage4_export(all_entities: list[dict], all_results: list[dict]):
                 source_location=m.get("source_location", ""),
             ))
 
+    # ---- Structural relationships (entity-to-entity) ----
+    # belongs_to: Alternative → Alternative_Class
+    for a in alternatives:
+        cls_name = a.alternative_class
+        if cls_name and cls_name != "Other":
+            for ac in alt_classes:
+                if _eq_ic(ac.class_name, cls_name):
+                    relationships.append(Relationship(
+                        rel_type="belongs_to",
+                        head_entity_type="Alternative", head_entity_id=a.entity_id,
+                        tail_entity_type="Alternative_Class", tail_entity_id=ac.class_name,
+                    ))
+                    break
+
+    # measured_in: Indicator → Tissue_Site
+    for ind in indicators:
+        if ind.measured_in:
+            for t in tissues:
+                if _eq_ic(t.site_name, ind.measured_in):
+                    relationships.append(Relationship(
+                        rel_type="measured_in",
+                        head_entity_type="Indicator", head_entity_id=ind.entity_id,
+                        tail_entity_type="Tissue_Site", tail_entity_id=t.entity_id,
+                    ))
+                    break
+
+    # uses_method: Indicator → Method
+    for ind in indicators:
+        if ind.measurement_method:
+            for m in methods:
+                if _eq_ic(m.method_name, ind.measurement_method):
+                    relationships.append(Relationship(
+                        rel_type="uses_method",
+                        head_entity_type="Indicator", head_entity_id=ind.entity_id,
+                        tail_entity_type="Method", tail_entity_id=m.entity_id,
+                    ))
+                    break
+
     # Results (with alignment)
     for r in all_results:
         doi = r.get("doi", "")
@@ -501,8 +529,7 @@ def stage4_export(all_entities: list[dict], all_results: list[dict]):
         "Alternative": alternatives,
         "Alternative_Class": alt_classes,
         "Composite_Product": composites,
-        "Experiment": [],  # Skip for now
-        "Swine_Model": swine_models,
+        "Experiment": [],
         "Swine": swines,
         "Intervention": interventions,
         "Control_Group": controls,
@@ -529,7 +556,6 @@ def stage4_export(all_entities: list[dict], all_results: list[dict]):
     summary = {
         "alternatives": len(alternatives),
         "composite_products": len(composites),
-        "swine_models": len(swine_models),
         "swine_groups": len(swines),
         "interventions": len(interventions),
         "control_groups": len(controls),
@@ -584,15 +610,18 @@ def run_full_pipeline(xml_dir: Optional[str] = None, skip_stage1: bool = False) 
         logger.info("=" * 60)
         logger.info("Article: %s", doi)
 
-        # Stage 2: Entity extraction
+        # Stage 2: Entity extraction (returns None if gated)
         entities = stage2_extract_entities(article)
+        if entities is None:
+            logger.info("  SKIPPED by gate check")
+            continue
         entities["doi"] = doi
 
         # Save entity outputs
         ent_dir = settings.entities_dir / doi_safe
         ent_dir.mkdir(parents=True, exist_ok=True)
 
-        for key in ["alternatives", "composite_products", "swine_model", "swine",
+        for key in ["alternatives", "composite_products", "swine",
                      "interventions", "control_groups", "tissue_sites", "indicators", "methods"]:
             data = {key: entities.get(key, []), "doi": doi}
             with open(ent_dir / f"{key}.json", "w", encoding="utf-8") as f:

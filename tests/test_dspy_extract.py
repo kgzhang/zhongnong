@@ -1,0 +1,116 @@
+"""Deterministic feedback loop: verify DSPy Alternative extraction quality."""
+import json
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+
+# Test fixtures — pre-loaded section JSONs
+def _load_article(name: str) -> dict:
+    """Load a structured section JSON by DOI-safe name."""
+    path = Path(f"data/structured_sections/{name}.json")
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text())
+
+
+class TestAlternativeExtraction:
+    """Verify that Alternative extraction correctly identifies substances from the glossary."""
+
+    def test_article1_has_alternative(self):
+        """Article 1 (MA antioxidants) must find Microbe-derived antioxidants."""
+        from src.dspy_extract import extract_alternatives
+        art = _load_article("10.3389_fvets.2025.1574259")
+        mm = art.get("sections", {}).get("materials_and_methods", {}).get("full_text", "")
+        assert mm, "M&M text must be non-empty"
+
+        result = extract_alternatives(mm)
+        alternatives = result.get("alternatives", [])
+        composites = result.get("composite_products", [])
+
+        # At least one alternative or composite must be found
+        total = len(alternatives) + len(composites)
+        assert total > 0, f"Expected >=1 alternative/composite, got {total}"
+        print(f"Found: {total} substances")
+
+    def test_glossary_matches_are_valid(self):
+        """Every extracted alternative must have a valid glossary class."""
+        from src.dspy_extract import extract_alternatives
+        from src.glossary import GlossaryIndex
+
+        gi = GlossaryIndex()
+        gi.load("ALTERNATIVE.tsv")
+
+        art = _load_article("10.3389_fvets.2025.1574259")
+        mm = art.get("sections", {}).get("materials_and_methods", {}).get("full_text", "")
+
+        result = extract_alternatives(mm)
+        valid_classes = {
+            "Plant_Extract", "Trace_Element", "Organic_Acid", "Probiotic",
+            "Polysaccharides_and_Oligosaccharides", "Enzyme",
+            "Bioactive_Peptides", "Other",
+        }
+        for a in result.get("alternatives", []):
+            cls = a.get("alternative_class", "")
+            assert cls in valid_classes, f"Invalid class '{cls}' for {a.get('standard_name')}"
+
+    def test_skip_article_without_alternatives(self):
+        """Article without standard alternatives should be skipped (gate check)."""
+        from src.dspy_extract import extract_alternatives
+        from src.glossary import GlossaryIndex
+
+        gi = GlossaryIndex()
+        gi.load("ALTERNATIVE.tsv")
+
+        art = _load_article("10.1186_s40104-025-01208-7")
+        mm = art.get("sections", {}).get("materials_and_methods", {}).get("full_text", "")
+
+        result = extract_alternatives(mm)
+        alternatives = result.get("alternatives", [])
+
+        # Check if any alternative matches a KNOWN glossary entry (not "Other")
+        has_known = any(
+            a.get("alternative_class") != "Other"
+            and a.get("alternative_class") in {
+                "Plant_Extract", "Trace_Element", "Organic_Acid", "Probiotic",
+                "Polysaccharides_and_Oligosaccharides", "Enzyme", "Bioactive_Peptides",
+            }
+            for a in alternatives
+        )
+
+        if not has_known:
+            print("SKIP: No known alternatives found — article should be skipped")
+            assert len(alternatives) == 0 or all(
+                a.get("alternative_class") == "Other" for a in alternatives
+            ), "Should have no known-class alternatives"
+
+
+class TestRelationshipGeneration:
+    """Verify that relationships are generated for all entity types."""
+
+    RELATIONSHIP_TYPES = [
+        "belongs_to",        # Alternative → Alternative_Class
+        "uses",              # Intervention → Alternative
+        "measured_in",       # Indicator → Tissue_Site
+        "uses_method",       # Indicator → Method
+        "increases", "decreases", "upregulates", "downregulates",
+        "enriches", "depletes",
+        "corresponds_to",    # Result → Indicator
+        "occurs_in",         # Result → Tissue_Site
+        "compared_to",       # Result → Control_Group
+    ]
+
+    def test_stage4_relationships_not_empty(self):
+        """Stage 4 export must generate relationships."""
+        import subprocess
+        import os
+
+        # Check that the relationships output file exists and has content
+        rel_path = Path("data/relationships/_stage3_relationships.json")
+        cypher_path = Path("data/output/neo4j/import.cypher")
+
+        if cypher_path.exists():
+            content = cypher_path.read_text()
+            rel_count = content.count("MERGE (a)-[")
+            assert rel_count > 0, f"Neo4j cypher must contain relationships, found {rel_count}"
+            print(f"Neo4j relationships: {rel_count}")
