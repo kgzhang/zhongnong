@@ -1,33 +1,31 @@
 """Entity ID system — global IDs for shared entities, local IDs for paper-specific ones.
 
-Global entities (name-based, dedup across papers):
+Global entities (name-based, stable across papers):
   Alternative:       ALT:{standard_name}
-  Alternative_Class: CLS:{class_name}
   Tissue_Site:       TIS:{site_name}
   Indicator:         IND:{standard_name}
   Method:            MET:{method_name}
   Swine breed:       SWN:{breed}
 
-Local entities (paper-specific, pmid+seq):
+Local entities (paper-specific, PMID+seq):
   Experiment:        {pmid}_EXP_{seq}
   Intervention:      {pmid}_INT_{seq}
   Control_Group:     {pmid}_CTL_{seq}
   Result:            {pmid}_RES_{seq}
   Literature:        {pmid}
+
+Note: Alternative_Class nodes are NOT generated — they are classification metadata,
+not extracted entities. The class is stored as an attribute on Alternative nodes.
 """
 import hashlib
 import re
 
 
 def global_id(entity_type: str, name: str) -> str:
-    """Build a stable global ID from entity type + name.
-
-    Normalizes the name (lowercase, strip, collapse whitespace) for stability.
-    """
+    """Build a stable global ID from entity type + name (lowercase, dedup-safe)."""
     key = re.sub(r'\s+', ' ', name.strip().lower())
     prefix = {
         "Alternative": "ALT",
-        "Alternative_Class": "CLS",
         "Tissue_Site": "TIS",
         "Indicator": "IND",
         "Method": "MET",
@@ -65,7 +63,6 @@ class EvidenceRegistry:
         self._store: dict[str, str] = {}
 
     def register(self, text: str) -> str:
-        """Register evidence text, return its ID. If already seen, return existing ID."""
         if not text:
             return "EV:NONE"
         eid = evidence_id(text)

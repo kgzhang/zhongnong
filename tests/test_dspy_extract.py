@@ -5,11 +5,18 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 
-# Test fixtures — pre-loaded section JSONs
-def _load_article(name: str) -> dict:
-    """Load a structured section JSON by DOI-safe name."""
-    path = Path(f"data/structured_sections/{name}.json")
+# Test fixtures — pre-loaded section JSONs (now PMID-based)
+def _load_article(pmid: str) -> dict:
+    """Load a structured section JSON by PMID."""
+    path = Path(f"data/structured_sections/{pmid}.json")
     if not path.exists():
+        # Fallback: search by DOI in file content
+        for f in Path("data/structured_sections").glob("*.json"):
+            if f.name.startswith("_"):
+                continue
+            data = json.loads(f.read_text())
+            if data.get("pmid") == pmid or data.get("doi", "").replace("/", "_").replace(":", "_") == pmid:
+                return data
         return {}
     return json.loads(path.read_text())
 
@@ -20,7 +27,7 @@ class TestAlternativeExtraction:
     def test_article1_has_alternative(self):
         """Article 1 (MA antioxidants) must find Microbe-derived antioxidants."""
         from src.dspy_extract import extract_alternatives
-        art = _load_article("10.3389_fvets.2025.1574259")
+        art = _load_article("40567545")
         mm = art.get("sections", {}).get("materials_and_methods", {}).get("full_text", "")
         assert mm, "M&M text must be non-empty"
 
@@ -41,7 +48,7 @@ class TestAlternativeExtraction:
         gi = GlossaryIndex()
         gi.load("ALTERNATIVE.tsv")
 
-        art = _load_article("10.3389_fvets.2025.1574259")
+        art = _load_article("40567545")
         mm = art.get("sections", {}).get("materials_and_methods", {}).get("full_text", "")
 
         result = extract_alternatives(mm)
@@ -62,7 +69,7 @@ class TestAlternativeExtraction:
         gi = GlossaryIndex()
         gi.load("ALTERNATIVE.tsv")
 
-        art = _load_article("10.1186_s40104-025-01208-7")
+        art = _load_article("40545549")
         mm = art.get("sections", {}).get("materials_and_methods", {}).get("full_text", "")
 
         result = extract_alternatives(mm)

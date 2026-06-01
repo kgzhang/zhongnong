@@ -38,13 +38,13 @@ def stage1_parse_xml(xml_dir: Optional[Path] = None) -> list[dict]:
         logger.info("Parsing %s", xml_path.name)
         try:
             art = parse_xml_to_sections(str(xml_path))
-            doi_safe = art["doi"].replace("/", "_").replace(":", "_")
-            out_path = out_dir / f"{doi_safe}.json"
+            pmid = art.get("pmid", "") or art["doi"].replace("/", "_").replace(":", "_")
+            out_path = out_dir / f"{pmid}.json"
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump(art, f, ensure_ascii=False, indent=2)
             articles.append(art)
-            logger.info("  -> %s (M&M=%dch, Results=%dch)",
-                        art["doi"],
+            logger.info("  -> PMID %s (M&M=%dch, Results=%dch)",
+                        pmid,
                         len(art["sections"].get("materials_and_methods", {}).get("full_text", "")),
                         len(art["sections"].get("results", {}).get("full_text", "")))
         except Exception as e:
@@ -158,19 +158,19 @@ def stage3_extract_results(article: dict, entities: dict) -> list[dict]:
 # Stage 4: Export graph (nodes.tsv + edges.tsv + evidence.tsv)
 # ---------------------------------------------------------------------------
 
-def _clean_entity_dir(doi_safe: str) -> None:
+def _clean_entity_dir(pmid: str) -> None:
     """Remove entity directory for a skipped/gated article."""
     import shutil
-    d = settings.entities_dir / doi_safe
+    d = settings.entities_dir / pmid
     if d.exists():
         shutil.rmtree(d)
-        logger.debug("Cleaned stale entity dir: %s", doi_safe)
+        logger.debug("Cleaned stale entity dir: %s", pmid)
 
 
-def stage4_export(all_entities: list[dict], all_results: list[dict]):
-    """Export knowledge graph as nodes.tsv + edges.tsv + evidence.tsv."""
+def stage4_merge():
+    """Merge all per-article entity data and export nodes.tsv + edges.tsv + evidence.tsv."""
     from src.stage4_export_graph import export_graph
-    return export_graph(all_entities, all_results)
+    return export_graph()
 # ---------------------------------------------------------------------------
 # Main runner
 # ---------------------------------------------------------------------------
@@ -187,10 +187,14 @@ def run_full_pipeline(xml_dir: Optional[str] = None, skip_stage1: bool = False) 
     """
     ensure_dirs()
 
-    # Pre-clean: remove any entity dirs without valid alternatives (from previous runs)
+    # Pre-clean: remove stale entity dirs (old DOI-based names, empty dirs)
     import shutil
-    for d in settings.entities_dir.iterdir():
+    for d in list(settings.entities_dir.iterdir()):
         if not d.is_dir() or d.name.startswith("_"):
+            continue
+        # Clean old DOI-based dirs (contain "/" or start with "10.")
+        if "/" in d.name or d.name.startswith("10."):
+            shutil.rmtree(d)
             continue
         alt_file = d / "alternatives.json"
         if not alt_file.exists():
@@ -198,7 +202,9 @@ def run_full_pipeline(xml_dir: Optional[str] = None, skip_stage1: bool = False) 
             continue
         try:
             data = json.loads(alt_file.read_text())
-            if len(data.get("alternatives", [])) == 0:
+            n_alt = len(data.get("alternatives", []))
+            n_comp = len(data.get("composite_products", []))
+            if n_alt == 0 and n_comp == 0:
                 shutil.rmtree(d)
         except Exception:
             shutil.rmtree(d)
@@ -220,44 +226,33 @@ def run_full_pipeline(xml_dir: Optional[str] = None, skip_stage1: bool = False) 
 
     logger.info("Processing %d articles", len(articles))
 
-    all_entities = []
-    all_results = []
-
     for article in articles:
         doi = article["doi"]
-        doi_safe = doi.replace("/", "_").replace(":", "_")
+        pmid = article.get("pmid", "") or doi.replace("/", "_").replace(":", "_")
         logger.info("=" * 60)
-        logger.info("Article: %s", doi)
+        logger.info("Article: %s (PMID: %s)", doi, pmid)
 
         # Stage 2: Entity extraction (returns None if gated)
         entities = stage2_extract_entities(article)
         if entities is None:
             logger.info("  SKIPPED by gate check")
-            _clean_entity_dir(doi_safe)
+            _clean_entity_dir(pmid)
             continue
-        entities["doi"] = doi
 
-        # Save entity outputs
-        ent_dir = settings.entities_dir / doi_safe
+        # Save per-article intermediate entity data
+        ent_dir = settings.entities_dir / pmid
         ent_dir.mkdir(parents=True, exist_ok=True)
 
         for key in ["alternatives", "composite_products", "swine",
                      "interventions", "control_groups", "tissue_sites", "indicators", "methods"]:
-            data = {key: entities.get(key, []), "doi": doi}
+            data = {key: entities.get(key, []), "doi": doi, "pmid": pmid}
             with open(ent_dir / f"{key}.json", "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
 
         # Stage 3: Result extraction
         results = stage3_extract_results(article, entities)
         with open(ent_dir / "results.json", "w", encoding="utf-8") as f:
-            json.dump({"doi": doi, "results": results}, f, ensure_ascii=False, indent=2)
-
-        # Annotate results with DOI
-        for r in results:
-            r["doi"] = doi
-
-        all_entities.append(entities)
-        all_results.extend(results)
+            json.dump({"doi": doi, "pmid": pmid, "results": results}, f, ensure_ascii=False, indent=2)
 
         logger.info("  Entities: %d alts, %d intv, %d inds, %d sites",
                     len(entities.get("alternatives", [])),
@@ -266,10 +261,10 @@ def run_full_pipeline(xml_dir: Optional[str] = None, skip_stage1: bool = False) 
                     len(entities.get("tissue_sites", [])))
         logger.info("  Results: %d", len(results))
 
-    # Stage 4: Export
+    # Stage 4: Merge all articles → nodes.tsv + edges.tsv
     logger.info("=" * 60)
-    logger.info("Stage 4: Validation + Export")
-    summary = stage4_export(all_entities, all_results)
+    logger.info("Stage 4: Merging articles...")
+    summary = stage4_merge()
 
     logger.info("=" * 60)
     logger.info("PIPELINE COMPLETE")
