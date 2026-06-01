@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["doi", "tissue_sites", "indicators", "methods"],
+  "properties": {
+    "doi": {"type": "string"},
+    "tissue_sites": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["site_name", "site_category", "evidence_text", "source_location"],
+        "properties": {
+          "site_name": {"type": "string"},
+          "site_category": {"enum": ["content", "mucosa", "serum", "tissue", "feces"]},
+          "evidence_text": {"type": "string"},
+          "source_location": {"type": "string"}
+        }
+      }
+    },
+    "indicators": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["standard_name", "abbreviation", "indicator_category", "evidence_text", "source_location"],
+        "properties": {
+          "standard_name": {"type": "string"},
+          "abbreviation": {"type": "string"},
+          "unit": {"type": "string"},
+          "indicator_category": {"enum": ["macro_phenotype", "microbiome", "metabolome", "molecular"]},
+          "measurement_method": {"type": "string"},
+          "measured_in": {"type": "string"},
+          "evidence_text": {"type": "string"},
+          "source_location": {"type": "string"}
+        }
+      }
+    },
+    "methods": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["method_name", "evidence_text", "source_location"],
+        "properties": {
+          "method_name": {"type": "string"},
+          "description": {"type": "string"},
+          "evidence_text": {"type": "string"},
+          "source_location": {"type": "string"}
+        }
+      }
+    }
+  }
+}

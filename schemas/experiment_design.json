@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["doi", "experiment_id", "swine_model", "swine", "interventions", "control_groups"],
+  "properties": {
+    "doi": {"type": "string"},
+    "experiment_id": {"type": "string"},
+    "description": {"type": "string"},
+    "swine_model": {
+      "type": "object",
+      "required": ["model_type", "evidence_text", "source_location"],
+      "properties": {
+        "model_type": {"enum": ["challenge", "normal"]},
+        "stressor_name": {"type": ["string", "null"]},
+        "challenge_method": {"enum": ["oral_gavage", "injection", "other", null]},
+        "challenge_dose": {"type": ["string", "null"]},
+        "challenge_timing": {"type": ["string", "null"]},
+        "evidence_text": {"type": "string"},
+        "source_location": {"type": "string"}
+      }
+    },
+    "swine": {
+      "type": "object",
+      "required": ["breed", "sex", "evidence_text", "source_location"],
+      "properties": {
+        "breed": {"type": "string"},
+        "sex": {"enum": ["boar", "sow", "barrow", "male", "female", "mixed"]},
+        "age": {"type": "string"},
+        "physiological_stage": {"type": "string"},
+        "initial_body_weight": {"type": "string"},
+        "sample_size": {"type": ["integer", "null"]},
+        "evidence_text": {"type": "string"},
+        "source_location": {"type": "string"}
+      }
+    },
+    "interventions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["intervention_target", "administration_route", "evidence_text", "source_location"],
+        "properties": {
+          "intervention_target": {"type": "string"},
+          "dose_value": {"type": ["number", "null"]},
+          "dose_unit_original": {"type": "string"},
+          "dose_unit_standard": {"enum": ["mg/kg_feed", "mg/kg_BW", "g/kg", "ppm", "other"]},
+          "administration_route": {"enum": ["diet", "drinking_water", "oral_gavage", "injection", "topical", "other"]},
+          "duration": {"type": "string"},
+          "basal_diet": {"type": "string"},
+          "positive_control": {"type": ["string", "null"]},
+          "evidence_text": {"type": "string"},
+          "source_location": {"type": "string"}
+        }
+      }
+    },
+    "control_groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["group_name", "group_type", "evidence_text", "source_location"],
+        "properties": {
+          "group_name": {"type": "string"},
+          "group_type": {"enum": ["negative_control", "positive_control", "basal_control", "sham"]},
+          "description": {"type": "string"},
+          "evidence_text": {"type": "string"},
+          "source_location": {"type": "string"}
+        }
+      }
+    }
+  }
+}
