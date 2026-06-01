@@ -89,7 +89,7 @@ class TestAlternativeGate:
     """Gate regression: no article must produce output without an Alternative."""
 
     def test_all_entity_dirs_have_alternatives(self):
-        """Every entity directory on disk must have at least one Alternative."""
+        """Every entity directory must have at least one Alternative or Composite_Product."""
         entities_root = Path("data/entities")
         violations = []
         for d in entities_root.iterdir():
@@ -98,23 +98,24 @@ class TestAlternativeGate:
             alt_file = d / "alternatives.json"
             if alt_file.exists():
                 data = json.loads(alt_file.read_text())
-                if len(data.get("alternatives", [])) == 0:
-                    violations.append(f"{d.name}: alternatives.json exists but is empty")
+                n_alt = len(data.get("alternatives", []))
+                n_comp = len(data.get("composite_products", []))
+                if n_alt == 0 and n_comp == 0:
+                    violations.append(f"{d.name}: alternatives.json exists but is empty (0 alt, 0 comp)")
             else:
-                # Check if any OTHER entity files exist
                 other_files = list(d.iterdir())
                 if other_files:
                     violations.append(f"{d.name}: No alternatives.json but has {len(other_files)} other entity files")
 
         if violations:
-            msg = "GATE VIOLATION: Articles found without Alternatives:\n" + "\n".join(violations)
-            # Clean them up automatically
+            msg = "GATE VIOLATION: Articles found without substances:\n" + "\n".join(violations)
             import shutil
             for d in entities_root.iterdir():
                 if not d.is_dir() or d.name.startswith("_"):
                     continue
                 alt_file = d / "alternatives.json"
-                if not alt_file.exists() or len(json.loads(alt_file.read_text()).get("alternatives", [])) == 0:
+                data = json.loads(alt_file.read_text()) if alt_file.exists() else {}
+                if not alt_file.exists() or (len(data.get("alternatives", [])) == 0 and len(data.get("composite_products", [])) == 0):
                     shutil.rmtree(d)
                     violations.append(f"CLEANED: {d.name}")
             assert False, msg

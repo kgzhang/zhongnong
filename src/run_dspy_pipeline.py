@@ -81,9 +81,10 @@ def stage2_extract_entities(article: dict) -> Optional[dict]:
 
     logger.info("  [C] %d alternatives, %d composites (has_known=%s)", n_alt, n_comp, has_known)
 
-    # GATE CHECK: skip if no known Alternative
-    if not has_known and n_comp == 0:
-        logger.info("  -> GATE: No known alternative found. Skipping article.")
+    # GATE CHECK: only skip if truly nothing found in the article
+    total_substances = n_alt + n_comp
+    if total_substances == 0:
+        logger.info("  -> GATE: No alternative substances found. Skipping article.")
         return None
 
     # Module A: Experiment design (no Swine_Model)
@@ -138,7 +139,7 @@ def stage3_extract_results(article: dict, entities: dict) -> list[dict]:
     # Normalize each result
     from src.utils import normalize_result_values
     for r in results:
-        _normalize_result_values(r)
+        normalize_result_values(r)
         r.setdefault("indicator_abbreviation", "")
         r.setdefault("tissue_site", "")
         r.setdefault("direction", "no_significant_change")
