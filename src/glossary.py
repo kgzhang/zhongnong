@@ -154,13 +154,13 @@ class GlossaryIndex:
 
         match = self._exact.get(name)
         if match is not None:
-            return dict(match, match_source="Exact_匹配")
+            return dict(match, match_source="词表精确匹配")
 
         canonical = self._synonyms.get(name)
         if canonical is not None:
             match = self._exact.get(canonical)
             if match is not None:
-                return dict(match, match_source="Synonym_同义词")
+                return dict(match, match_source="词表同义映射")
 
         best = None
         best_dist = 10  # > max allowed < 3
@@ -172,7 +172,7 @@ class GlossaryIndex:
                 best = entry
 
         if best_dist < 3:
-            return dict(best["entry"], match_source="Fuzzy_模糊匹配")
+            return dict(best["entry"], match_source="词表模糊匹配")
 
         return {
             "standard_name": name,
@@ -180,6 +180,24 @@ class GlossaryIndex:
             "subclass": "",
             "match_source": "Other_未匹配",
         }
+
+    def list_substances(self) -> list[dict]:
+        """Return all indexed substances as a list of dicts.
+
+        Each dict contains: standard_name, class, subclass.
+        """
+        seen = set()
+        result: list[dict] = []
+        for entry in self._exact.values():
+            key = (entry["standard_name"], entry["class"], entry["subclass"])
+            if key not in seen:
+                seen.add(key)
+                result.append({
+                    "standard_name": entry["standard_name"],
+                    "class": entry["class"],
+                    "subclass": entry["subclass"],
+                })
+        return result
 
     # ------------------------------------------------------------------
     # Levenshtein distance
@@ -290,7 +308,7 @@ class GlossaryIndex:
             "standard_name": standard_name,
             "class": norm_class,
             "subclass": subclass,
-            "match_source": "Exact_匹配",
+            "match_source": "词表精确匹配",
         }
 
         # Exact match index

@@ -43,7 +43,7 @@ def postprocess_alternatives(data: dict) -> dict:
     seen = set()
     deduped = []
     for alt in data.get("alternatives", []):
-        key = alt["standard_name"].lower().strip()
+        key = alt.get("standard_name", "").lower().strip()
         if key not in seen:
             seen.add(key)
             deduped.append(alt)
@@ -56,7 +56,7 @@ def postprocess_experiment_design(data: dict) -> dict:
     for inter in data.get("interventions", []):
         if inter.get("dose_value") is not None and inter.get("dose_unit_original"):
             new_val, new_unit = normalize_dose_unit(
-                float(inter["dose_value"]), inter["dose_unit_original"]
+                float(inter.get("dose_value", 0)), inter.get("dose_unit_original", "")
             )
             inter["dose_unit_standard"] = new_unit
             inter["dose_value"] = new_val

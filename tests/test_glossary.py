@@ -31,7 +31,7 @@ def test_fuzzy_match():
     assert result is not None
     assert result["standard_name"] == "zinc oxide (ZnO)"
     assert result["class"] == "Trace_Element"
-    assert result["match_source"] == "Fuzzy_模糊匹配"
+    assert result["match_source"] == "词表模糊匹配"
 
 
 def test_not_found_returns_other():

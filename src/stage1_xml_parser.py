@@ -74,7 +74,7 @@ def _recursive_paragraphs(sec_elem) -> list[str]:
     """Gather *all* <p> text recursively inside a <sec> element (depth-first)."""
     paragraphs: list[str] = []
     for child in sec_elem.iter():
-        if child.tag in ("p", "p"):
+        if child.tag == "p":
             text = _normalise_text(child.text)
             if text:
                 paragraphs.append(text)
