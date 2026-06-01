@@ -1,9 +1,12 @@
 """Stage 0: PubMed literature search and DOI-based deduplication."""
 import time
 import csv
+import logging
 from typing import Optional
 from Bio import Entrez
 from src.config import ENTREZ_EMAIL, ENTREZ_API_KEY, DATA_DIR
+
+logger = logging.getLogger(__name__)
 
 Entrez.email = ENTREZ_EMAIL
 if ENTREZ_API_KEY:
@@ -108,7 +111,7 @@ def search_substance(substance: str, retmax: int = 5000) -> list[dict]:
                     "search_term": substance,
                 })
     except Exception as e:
-        print(f"Error searching '{substance}': {e}")
+        logger.error("Error searching '%s': %s", substance, e)
     return results
 
 
@@ -152,7 +155,7 @@ def run_stage0(
         for r in results:
             if r.get("doi"):
                 existing_dois.add(r["doi"])
-        print(f"  {substance}: {len(results)} hits, {len(novel)} novel")
+        logger.info("  %s: %d hits, %d novel", substance, len(results), len(novel))
 
     # Ensure output directory exists
     from pathlib import Path
@@ -169,5 +172,5 @@ def run_stage0(
         for r in all_novel:
             writer.writerow(r)
 
-    print(f"\nTotal novel articles in pool: {len(all_novel)}")
+    logger.info("Total novel articles in pool: %d", len(all_novel))
     return output_path

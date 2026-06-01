@@ -1,9 +1,20 @@
-"""Tests for LLM Client with JSON Schema enforcement."""
+"""Tests for LLM Client with JSON Schema enforcement (litellm backend)."""
 import json
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-from llm_client import LLMClient, parse_llm_json_response
+from llm_client import LLMClient, parse_llm_json_response, resolve_model
+
+
+def test_resolve_model_anthropic():
+    """Short model names get anthropic/ prefix for litellm."""
+    assert resolve_model("claude-sonnet-4-20250514") == "anthropic/claude-sonnet-4-20250514"
+
+
+def test_resolve_model_prefixed_passthrough():
+    """Already-prefixed model names pass through unchanged."""
+    assert resolve_model("openai/gpt-4o") == "openai/gpt-4o"
+    assert resolve_model("anthropic/claude-opus-4-20250514") == "anthropic/claude-opus-4-20250514"
 
 
 def test_parse_valid_json():

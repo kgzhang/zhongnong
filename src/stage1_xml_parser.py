@@ -5,10 +5,13 @@ Extracts structured sections from PMC full-text XML files.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
 from lxml import etree
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +347,7 @@ def run_stage1(literature_pool_path: str = "data/literature_pool.tsv",
             for row in reader:
                 pool.append(row)
     except FileNotFoundError:
-        print(f"Literature pool not found: {literature_pool_path}")
+        logger.error("Literature pool not found: %s", literature_pool_path)
         return ""
 
     xml_dir_path = Path(xml_dir)
@@ -384,5 +387,5 @@ def run_stage1(literature_pool_path: str = "data/literature_pool.tsv",
     with open(fail_path, "w", encoding="utf-8") as f:
         json.dump(failed, f, ensure_ascii=False, indent=2)
 
-    print(f"Stage 1 complete: {success} parsed, {len(failed)} failed")
+    logger.info("Stage 1 complete: %d parsed, %d failed", success, len(failed))
     return str(output_dir)
