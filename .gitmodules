@@ -1,0 +1,3 @@
+[submodule "langextract"]
+	path = langextract
+	url = https://github.com/google/langextract.git
