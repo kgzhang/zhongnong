@@ -1,0 +1,221 @@
+entities:
+  Alternative:
+    display_name: "抗生素替代物物质"
+    description: "抗生素替代物物质（标准分类中的具体有效成分）。Alternative 与 Composite_Product 分开。"
+    primary_text: standard_name
+    extraction_guidance: |
+      ## 提取要求
+      1. 扫描材料与方法部分，识别所有用作抗生素替代物的物质
+      2. 优先与下方《Alternative分类》词表匹配
+      3. 词表中存在 → 使用词表标准名称和分类
+      4. 词表中不存在 → 标记为 Other，保留原文原始名称
+      5. 严禁将多个实体拼接成长字符串
+    notes: "不要拼接字符串创造不存在的复合实体。原封不动保留原文中的原始英文全称及缩写。"
+    vocabulary:
+      source: ALTERNATIVE.tsv
+      key_field: standard_name
+      class_field: Alternative_Class
+      subclass_field: Subclass
+      match_fields: [standard_name]
+      match_mode: fuzzy
+      inject_in_prompt: true
+    attributes:
+      - {name: standard_name, type: string, required: true, source: llm}
+      - {name: abbreviation, type: string, required: false, source: llm}
+      - {name: cas_number, type: string, required: false, source: llm}
+      - {name: source_organism, type: string, required: false, source: llm}
+      - {name: is_synthetic, type: boolean, required: false, source: llm}
+      - {name: original_text, type: string, required: true, source: llm}
+      - {name: alternative_class, type: enum, required: true, source: post,
+         values: [Plant_Extract, Trace_Element, Organic_Acid, Probiotic, Polysaccharides_and_Oligosaccharides, Enzyme, Bioactive_Peptides, Other]}
+      - {name: subclass, type: string, required: false, source: post}
+      - {name: match_source, type: enum, required: true, source: post,
+         values: [词表精确匹配, 词表同义映射, 词表模糊匹配, Other_未匹配]}
+      - {name: evidence_text, type: text, required: true, source: align}
+      - {name: source_location, type: string, required: true, source: structure}
+
+  Alternative_Class:
+    display_name: "物质分类"
+    description: "物质的分类（七大类 + Other）作为分类节点"
+    primary_text: class_name
+    attributes:
+      - {name: class_name, type: string, required: true, source: llm}
+      - {name: level, type: integer, required: false, source: llm}
+      - {name: description, type: text, required: false, source: llm}
+      - {name: evidence_text, type: text, required: true, source: align}
+      - {name: source_location, type: string, required: true, source: structure}
+
+  Composite_Product:
+    display_name: "复合制剂产品"
+    description: "复合制剂产品作为独立实体，通过 has_component 关联各组分"
+    primary_text: product_name
+    extraction_guidance: |
+      ## 复合制剂三步处理法
+      第一步 — 拆分组分；第二步 — 创建复合节点；第三步 — 建立has_component关系
+      严禁字符串拼接命名
+    notes: "禁止生成'植物乳杆菌+枯草芽孢杆菌'这样的长字符串节点名"
+    attributes:
+      - {name: product_name, type: string, required: true, source: llm}
+      - {name: manufacturer, type: string, required: false, source: llm}
+      - {name: is_commercial, type: boolean, required: false, source: llm}
+      - {name: components, type: json_array, required: true, source: llm}
+      - {name: evidence_text, type: text, required: true, source: align}
+      - {name: source_location, type: string, required: true, source: structure}
+    inline_relations:
+      - {name: has_component, target: [Alternative, Composite_Product], via_field: components, multiple: true}
+
+  Literature:
+    display_name: "文献"
+    description: "文献（以DOI或PMID为唯一标识）"
+    primary_text: title
+    attributes:
+      - {name: doi, type: string, required: true, source: llm}
+      - {name: pmid, type: string, required: true, source: llm}
+      - {name: title, type: string, required: true, source: llm}
+      - {name: journal, type: string, required: false, source: llm}
+      - {name: abstract_conclusion, type: text, required: false, source: llm}
+      - {name: publication_year, type: integer, required: false, source: llm}
+      - {name: publication_date, type: string, required: false, source: llm}
+      - {name: study_design, type: enum, required: false, source: llm,
+         values: [completely_randomized, randomized_block, factorial, cross_over, other]}
+      - {name: evidence_text, type: text, required: true, source: align}
+      - {name: source_location, type: string, required: true, source: structure}
+
+  Experiment:
+    display_name: "试验"
+    description: "文献下的独立实验单元"
+    primary_text: experiment_id
+    attributes:
+      - {name: experiment_id, type: string, required: true, source: llm}
+      - {name: description, type: text, required: false, source: llm}
+      - {name: evidence_text, type: text, required: true, source: align}
+      - {name: source_location, type: string, required: true, source: structure}
+
+  Swine_Model:
+    display_name: "动物模型"
+    description: "试验动物模型（攻毒模型或常规模型）"
+    primary_text: stressor_name
+    attributes:
+      - {name: model_type, type: enum, required: true, source: llm, values: [challenge, normal]}
+      - {name: stressor_name, type: string, required: false, source: llm}
+      - {name: challenge_method, type: string, required: false, source: llm}
+      - {name: challenge_dose, type: string, required: false, source: llm}
+      - {name: challenge_timing, type: string, required: false, source: llm}
+      - {name: evidence_text, type: text, required: true, source: align}
+      - {name: source_location, type: string, required: true, source: structure}
+
+  Swine:
+    display_name: "动物参数"
+    description: "试验动物参数（品种、性别、日龄、体重等）"
+    primary_text: breed
+    attributes:
+      - {name: breed, type: string, required: true, source: llm}
+      - {name: sex, type: enum, required: false, source: llm,
+         values: [boar, sow, barrow, male, female, mixed]}
+      - {name: age, type: string, required: false, source: llm}
+      - {name: physiological_stage, type: string, required: false, source: llm}
+      - {name: initial_body_weight, type: string, required: false, source: llm}
+      - {name: sample_size, type: integer, required: false, source: llm}
+      - {name: evidence_text, type: text, required: true, source: align}
+      - {name: source_location, type: string, required: true, source: structure}
+
+  Intervention:
+    display_name: "干预措施"
+    description: "干预措施（给药方案）"
+    primary_text: intervention_target
+    attributes:
+      - {name: intervention_target, type: string, required: true, source: llm}
+      - {name: dose_value, type: float, required: false, source: llm}
+      - {name: dose_unit_original, type: string, required: false, source: llm}
+      - {name: dose_unit_standard, type: string, required: false, source: post}
+      - {name: administration_route, type: enum, required: false, source: llm,
+         values: [diet, drinking_water, oral_gavage, injection, topical, other]}
+      - {name: duration, type: string, required: false, source: llm}
+      - {name: basal_diet, type: string, required: false, source: llm}
+      - {name: positive_control, type: string, required: false, source: llm}
+      - {name: evidence_text, type: text, required: true, source: align}
+      - {name: source_location, type: string, required: true, source: structure}
+
+  Control_Group:
+    display_name: "对照组"
+    description: "作为结果对比基准的实体"
+    primary_text: group_name
+    attributes:
+      - {name: group_name, type: string, required: true, source: llm}
+      - {name: group_type, type: enum, required: true, source: llm,
+         values: [negative_control, positive_control, basal_control, sham]}
+      - {name: description, type: text, required: false, source: llm}
+      - {name: evidence_text, type: text, required: true, source: align}
+      - {name: source_location, type: string, required: true, source: structure}
+
+  Tissue_Site:
+    display_name: "组织部位"
+    description: "取样组织/部位"
+    primary_text: site_name
+    attributes:
+      - {name: site_name, type: string, required: true, source: llm}
+      - {name: site_category, type: enum, required: false, source: llm,
+         values: [content, mucosa, serum, tissue, feces]}
+      - {name: evidence_text, type: text, required: true, source: align}
+      - {name: source_location, type: string, required: true, source: structure}
+
+  Indicator:
+    display_name: "测定指标"
+    description: "测定指标（标准化名称+缩写）"
+    primary_text: abbreviation
+    attributes:
+      - {name: standard_name, type: string, required: true, source: llm}
+      - {name: abbreviation, type: string, required: true, source: llm}
+      - {name: unit, type: string, required: false, source: llm}
+      - {name: measurement_method, type: string, required: false, source: llm}
+      - {name: indicator_category, type: enum, required: false, source: llm,
+         values: [macro_phenotype, microbiome, metabolome, molecular]}
+      - {name: measured_in, type: string, required: false, source: llm}
+      - {name: evidence_text, type: text, required: true, source: align}
+      - {name: source_location, type: string, required: true, source: structure}
+    references:
+      - {name: measured_in, target_entity: Tissue_Site, target_field: site_name, edge_type: measured_in}
+
+  Method:
+    display_name: "测定方法"
+    description: "测定方法"
+    primary_text: method_name
+    attributes:
+      - {name: method_name, type: string, required: true, source: llm}
+      - {name: description, type: text, required: false, source: llm}
+      - {name: evidence_text, type: text, required: true, source: align}
+      - {name: source_location, type: string, required: true, source: structure}
+
+  Result:
+    display_name: "显著性结果"
+    description: "三元组：部位+指标+变化方向。全量抽取所有报告了统计学比较结果的指标变化。"
+    primary_text: indicator_abbreviation
+    extraction_guidance: |
+      ## 提取规则
+      1. 全量抽取所有报告了统计学比较结果的指标变化
+      2. 如实记录原文统计信息，无论P值大小
+      3. 对比基准必须是试验组与对照组的横向比较
+      4. 关系类型：数值型→increases/decreases, 基因→upregulates/downregulates, 微生物→enriches/depletes
+    notes: "若同一句话描述多个指标变化，拆分为多行独立记录"
+    attributes:
+      - {name: indicator_abbreviation, type: string, required: true, source: llm}
+      - {name: tissue_site, type: string, required: false, source: llm}
+      - {name: direction, type: enum, required: true, source: llm,
+         values: [increased, decreased, no_significant_change]}
+      - {name: relation_type, type: enum, required: true, source: llm,
+         values: [increases, decreases, upregulates, downregulates, enriches, depletes, affects]}
+      - {name: p_value, type: float, required: false, source: llm}
+      - {name: p_value_original_text, type: string, required: false, source: llm}
+      - {name: corrected_significance, type: string, required: false, source: llm}
+      - {name: effect_size, type: string, required: false, source: llm}
+      - {name: time_point, type: string, required: false, source: llm}
+      - {name: subgroup, type: string, required: false, source: llm}
+      - {name: significance_level, type: enum, required: true, source: llm,
+         values: [p_less_0.01, p_less_0.05, trend_0.05_0.1, not_significant]}
+      - {name: compared_to_group, type: string, required: false, source: llm}
+      - {name: evidence_text, type: text, required: true, source: align}
+      - {name: source_location, type: string, required: true, source: structure}
+    references:
+      - {name: indicator_abbreviation, target_entity: Indicator, target_field: abbreviation, edge_type: corresponds_to}
+      - {name: tissue_site, target_entity: Tissue_Site, target_field: site_name, edge_type: occurs_in}
+      - {name: compared_to_group, target_entity: Control_Group, target_field: group_name, edge_type: compared_to}

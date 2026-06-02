@@ -1,0 +1,18 @@
+phases:
+  phase_1_alternatives:
+    description: "Extract antibiotic alternatives (GATE)"
+    extracts: [Alternative, Composite_Product]
+    gate:
+      entity: Alternative
+      condition: "alternative_class not in ['Other']"
+      on_fail: skip_article
+  phase_2_experiment:
+    description: "Extract experiment design parameters"
+    extracts: [Literature, Experiment, Swine_Model, Swine, Intervention, Control_Group]
+  phase_3_indicators:
+    description: "Extract indicators, tissue sites, methods"
+    extracts: [Tissue_Site, Indicator, Method]
+  phase_4_results:
+    description: "Extract statistically evaluated results"
+    extracts: [Result]
+    context_from: [phase_2_experiment, phase_3_indicators]
