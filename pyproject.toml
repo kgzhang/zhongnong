@@ -1,19 +1,19 @@
 [project]
 name = "zhongnong-kg"
-version = "0.1.0"
+version = "2.0.0"
 requires-python = ">=3.12"
 dependencies = [
-    "lxml>=5.3",
-    "pandas>=2.2",
-    "jsonschema>=4.23",
-    "litellm>=1.0",
-    "pydantic-settings>=2.0",
-    "biopython>=1.84",
     "httpx>=0.28",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "lxml>=5.3",
+    "pyyaml>=6.0",
+    "regex>=2024",
+    "click>=8.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.25"]
 
 [project.scripts]
-zhongnong-kg = "src.run_pipeline:cli"
+zhongnong-kg = "src.cli:cli"
