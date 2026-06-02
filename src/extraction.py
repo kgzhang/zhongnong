@@ -177,6 +177,15 @@ def extract(
                 result.skipped = True
                 result.skip_reason = "No known Alternative found (gate check)"
                 result.extractions = all_extractions
+                # Save intermediate checkpoint for manual inspection
+                _save_checkpoint(
+                    result, all_extractions, pmid, phase_exts,
+                )
+                logger.info(
+                    "Gate check failed — %d alternatives found, none in known classes. "
+                    "Checkpoint saved to data/intermediates/",
+                    len(alt_exts),
+                )
                 return result
 
     # Post-process all extractions
@@ -195,8 +204,58 @@ def extract(
                  ", ".join(f"{t}={c}" for t, c in sorted(type_counts_final.items())))
     print(f"  Total: {len(all_extractions)} entities in {total_time:.1f}s", flush=True)
 
+    # Save checkpoint for successful extraction too
+    _save_checkpoint(result, all_extractions, pmid, all_extractions)
+
     result.extractions = all_extractions
     return result
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint persistence
+# ---------------------------------------------------------------------------
+
+def _save_checkpoint(
+    result: ArticleExtractionResult,
+    all_extractions: list[Extraction],
+    pmid: str,
+    phase1_exts: list[Extraction],
+) -> None:
+    """Save intermediate extraction results to disk for manual inspection.
+
+    Writes ``data/intermediates/{pmid}.json`` with a human-readable summary
+    of extracted entities, organized by phase.
+    """
+    import json as _json
+
+    out_dir = Path("data/intermediates")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    def _ext_to_dict(ext: Extraction) -> dict:
+        return {
+            "class": ext.extraction_class,
+            "text": ext.extraction_text,
+            "attributes": ext.attributes or {},
+        }
+
+    payload = {
+        "doi": result.doi,
+        "pmid": pmid,
+        "skipped": result.skipped,
+        "skip_reason": result.skip_reason,
+        "total_entities": len(all_extractions),
+        "phase1_entities": [_ext_to_dict(e) for e in phase1_exts],
+        "all_entities": [_ext_to_dict(e) for e in all_extractions],
+        "warnings": result.warnings,
+    }
+
+    safe_pmid = pmid or result.doi.replace("/", "_").replace(":", "_") or "unknown"
+    out_path = out_dir / f"{safe_pmid}.json"
+    out_path.write_text(_json.dumps(payload, ensure_ascii=False, indent=2))
+    if result.skipped:
+        print(f"    ⚠ Gate failed — Phase 1 results saved to {out_path}", flush=True)
+    else:
+        logger.debug("Checkpoint saved to %s", out_path)
 
 
 def _parse_article_sections(xml_path: Path) -> dict[str, str]:
