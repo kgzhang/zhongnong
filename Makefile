@@ -6,7 +6,7 @@ CLI := uv run python -m src.cli
 # Default
 # ---------------------------------------------------------------------------
 help:
-	@echo "zhongnong-kg v2 — Knowledge Graph Extraction Pipeline"
+	@echo "llm-extract v2 — Knowledge Graph Extraction Pipeline"
 	@echo ""
 	@echo "Setup:"
 	@echo "  make install       Install dependencies via uv sync"

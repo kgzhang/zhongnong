@@ -1,4 +1,4 @@
-"""CLI entry point for zhongnong-kg."""
+"""CLI entry point for llm-extract."""
 import sys
 from pathlib import Path
 
@@ -9,7 +9,7 @@ from src.config import settings
 
 @click.group()
 def cli():
-    """zhongnong-kg — Knowledge Graph Extraction Pipeline v2."""
+    """llm-extract — Knowledge Graph Extraction Pipeline v2."""
 
 
 @cli.command()

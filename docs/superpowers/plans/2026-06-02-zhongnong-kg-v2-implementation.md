@@ -1,4 +1,4 @@
-# zhongnong-kg v2 Implementation Plan
+# llm-extract v2 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12+, httpx (async LLM client), PyYAML (config), lxml (XML parsing), regex (tokenization), click (CLI), pydantic-settings (config). pytest + pytest-asyncio for testing.
 
-**Spec:** `docs/superpowers/specs/2026-06-01-zhongnong-kg-v2-design.md`
+**Spec:** `docs/superpowers/specs/2026-06-01-llm-extract-v2-design.md`
 
 ---
 
@@ -96,7 +96,7 @@ Replace the `[project]` dependencies section:
 
 ```toml
 [project]
-name = "zhongnong-kg"
+name = "llm-extract"
 version = "2.0.0"
 requires-python = ">=3.12"
 dependencies = [
@@ -113,7 +113,7 @@ dependencies = [
 dev = ["pytest>=8", "pytest-asyncio>=0.25"]
 
 [project.scripts]
-zhongnong-kg = "src.cli:cli"
+llm-extract = "src.cli:cli"
 ```
 
 - [ ] **Step 2: Sync dependencies**
@@ -922,7 +922,7 @@ git commit -m "feat: add tokenizer layer (RegexTokenizer, UnicodeTokenizer, sent
 Read current `src/config.py`, then replace with:
 
 ```python
-"""Configuration for zhongnong-kg v2 pipeline."""
+"""Configuration for llm-extract v2 pipeline."""
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -1746,7 +1746,7 @@ git commit -m "feat: add format handler (JSON/YAML, fence extraction, think-tag 
 Create `schemas/entities.yaml` (abbreviated — full version covers all 13 entity types; showing 4 representative ones):
 
 ```yaml
-# zhongnong-kg Entity Type Definitions
+# llm-extract Entity Type Definitions
 # Source: SCHEMA.tsv — all entity types, attributes, extraction guidance
 
 entities:
@@ -5224,7 +5224,7 @@ git commit -m "feat: add graph builder (entity dedup, edge resolution, Neo4j CSV
 Create `src/cli.py`:
 
 ```python
-"""CLI entry point for zhongnong-kg."""
+"""CLI entry point for llm-extract."""
 import sys
 from pathlib import Path
 
@@ -5235,7 +5235,7 @@ from src.config import settings
 
 @click.group()
 def cli():
-    """zhongnong-kg — Knowledge Graph Extraction Pipeline v2."""
+    """llm-extract — Knowledge Graph Extraction Pipeline v2."""
     pass
 
 
@@ -5249,7 +5249,7 @@ def cli():
 @click.option("--resume/--no-resume", default=False, help="Resume from checkpoints")
 def run(input_file, output_dir, model, workers, resume):
     """Run the full extraction pipeline."""
-    click.echo(f"zhongnong-kg v2.0.0")
+    click.echo(f"llm-extract v2.0.0")
     click.echo(f"Input: {input_file}")
     click.echo(f"Output: {output_dir}")
     click.echo(f"Model: {model or settings.llm_model}")

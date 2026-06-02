@@ -620,7 +620,7 @@ wheels = [
 ]
 
 [[package]]
-name = "zhongnong-kg"
+name = "llm-extract"
 version = "2.0.0"
 source = { virtual = "." }
 dependencies = [

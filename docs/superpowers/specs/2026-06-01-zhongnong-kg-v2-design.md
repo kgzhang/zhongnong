@@ -1,9 +1,9 @@
-# zhongnong-kg v2: Knowledge Graph Extraction Pipeline
+# llm-extract v2: Knowledge Graph Extraction Pipeline
 
 **Date:** 2026-06-02
 **Status:** Spec — awaiting review
 
-**Context:** Full rewrite of zhongnong-kg following langextract's architecture faithfully — same layer decomposition, same pipeline pattern, same abstractions — adapted to the swine-nutrition knowledge graph domain.
+**Context:** Full rewrite of llm-extract following langextract's architecture faithfully — same layer decomposition, same pipeline pattern, same abstractions — adapted to the swine-nutrition knowledge graph domain.
 
 ---
 
@@ -1723,10 +1723,10 @@ def resolve_edges(
 ### CLI (`src/cli.py`)
 
 ```bash
-zhongnong-kg run --input data/literature_pool.tsv --output output/
-zhongnong-kg run --resume
-zhongnong-kg debug --xml data/xml/PMC12178903.xml
-zhongnong-kg export --checkpoints data/intermediates/ --output output/
+llm-extract run --input data/literature_pool.tsv --output output/
+llm-extract run --resume
+llm-extract debug --xml data/xml/PMC12178903.xml
+llm-extract export --checkpoints data/intermediates/ --output output/
 ```
 
 ---
@@ -1734,7 +1734,7 @@ zhongnong-kg export --checkpoints data/intermediates/ --output output/
 ## 14. File Structure
 
 ```
-zhongnong-kg/
+llm-extract/
 ├── schemas/                         # EXTERNAL CONFIG — domain model, not code
 │   ├── entities.yaml                # 13 entity types: descriptions, extraction_guidance,
 │   │                                #   examples, notes, vocabulary bindings, field source
@@ -1943,7 +1943,7 @@ class Settings(BaseSettings):
 
 ```toml
 [project]
-name = "zhongnong-kg"
+name = "llm-extract"
 version = "2.0.0"
 requires-python = ">=3.12"
 dependencies = [

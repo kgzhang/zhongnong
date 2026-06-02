@@ -29,55 +29,37 @@ def extract(
     article_xml,
     *,
     model=None,
-    model_id: str = "deepseek-chat",
+    model_id: str | None = None,
     api_key: str | None = None,
     registry=None,
-    max_char_buffer: int = 8000,
-    skip_if_no_known_alternative: bool = True,
+    max_char_buffer: int | None = None,
+    skip_if_no_known_alternative: bool | None = None,
     **kwargs,
 ) -> ArticleExtractionResult:
     """Extract entities from one PMC XML article using 4-phase pipeline.
 
-    Parameters
-    ----------
-    article_xml : str or Path
-        Path to a PMC XML article file.
-    model : BaseLanguageModel or None
-        Pre-configured language model.  Created via :func:`create_model` when
-        not supplied.
-    model_id : str
-        Model identifier used when *model* is ``None``.  Default ``"deepseek-chat"``.
-    api_key : str or None
-        API key used when *model* is ``None``.
-    registry : SchemaRegistry or None
-        Schema registry for post-processing.  Loaded from default config when
-        not supplied.
-    max_char_buffer : int
-        Maximum characters per chunk.  Default 8000.
-    skip_if_no_known_alternative : bool
-        When ``True``, articles with no recognized alternatives are skipped.
-    **kwargs
-        Passed through to :meth:`Annotator.annotate_documents`.
-
-    Returns
-    -------
-    ArticleExtractionResult
+    All defaults come from ``src.config.settings`` unless explicitly overridden.
     """
+    from src.config import settings
+
+    if model_id is None:
+        model_id = settings.llm_model
+    if max_char_buffer is None:
+        max_char_buffer = settings.max_char_buffer
+    if skip_if_no_known_alternative is None:
+        skip_if_no_known_alternative = settings.skip_if_no_known_alternative
+
     # 1. Load registry if not provided
     if registry is None:
         from src.schema_registry import SchemaRegistry
 
         registry = SchemaRegistry()
 
-    # 2. Create model if not provided
+    # 2. Create model if not provided (uses global settings)
     if model is None:
-        from src.factory import ModelConfig, create_model
+        from src.factory import create_model
 
-        config = ModelConfig(
-            model_id=model_id,
-            provider_kwargs={"api_key": api_key or ""},
-        )
-        model = create_model(config)
+        model = create_model()
 
     # 3. Parse article sections
     article_path = Path(article_xml)

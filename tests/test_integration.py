@@ -1,4 +1,4 @@
-"""End-to-end integration tests for zhongnong-kg v2 pipeline."""
+"""End-to-end integration tests for llm-extract v2 pipeline."""
 import pytest
 import tempfile
 from pathlib import Path
