@@ -88,3 +88,48 @@ class TestParseOutput:
         fh = FormatHandler(use_wrapper=False, use_fences=False)
         result = fh.parse_output('[{"Alternative": "thymol"}, {"Alternative": "curcumin"}]')
         assert len(result) == 2
+
+    def test_yaml_parse(self):
+        """FormatHandler should parse YAML output."""
+        fh = FormatHandler(format_type=FormatType.YAML, use_fences=False)
+        result = fh.parse_output("extractions:\n- Alternative: thymol\n")
+        assert len(result) == 1
+        assert result[0]["Alternative"] == "thymol"
+
+    def test_strict_fences_invalid_language_raises(self):
+        """Strict mode raises when fence language tag doesn't match format type."""
+        fh = FormatHandler(format_type=FormatType.JSON, use_fences=True, strict_fences=True)
+        with pytest.raises(ValueError, match="Invalid fence language tag"):
+            fh.parse_output('```yaml\n{"extractions": []}\n```')
+
+    def test_parse_invalid_json_raises(self):
+        """Invalid JSON should raise ValueError."""
+        fh = FormatHandler(format_type=FormatType.JSON, use_fences=False)
+        with pytest.raises(ValueError):
+            fh.parse_output('{invalid json}}}')
+
+    def test_parse_non_dict_item_raises(self):
+        """Each item in extractions list must be a dict."""
+        fh = FormatHandler(format_type=FormatType.JSON, use_fences=False)
+        with pytest.raises(ValueError, match="dict"):
+            fh.parse_output('{"extractions": ["not a dict"]}')
+
+    def test_yaml_format_with_fences(self):
+        """YAML output with fences should work."""
+        fh = FormatHandler(format_type=FormatType.YAML, use_fences=True)
+        ext = Extraction(extraction_class="Alternative", extraction_text="thymol")
+        result = fh.format_extraction_example([ext])
+        assert result.startswith("```yaml")
+
+    def test_parse_unwrapped_dict(self):
+        """Dict without wrapper key should be treated as single extraction."""
+        fh = FormatHandler(format_type=FormatType.JSON, use_fences=False, use_wrapper=False)
+        result = fh.parse_output('{"Alternative": "thymol"}')
+        assert len(result) == 1
+        assert result[0]["Alternative"] == "thymol"
+
+    def test_non_string_key_raises(self):
+        """Non-string keys in extraction dicts should raise in YAML mode."""
+        fh = FormatHandler(format_type=FormatType.YAML, use_fences=False, use_wrapper=False)
+        with pytest.raises(ValueError, match="string"):
+            fh.parse_output('{1: value}')

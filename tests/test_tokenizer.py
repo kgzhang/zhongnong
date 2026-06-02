@@ -97,3 +97,61 @@ class TestConvenienceTokenize:
         tt = tokenize("Simple test.")
         assert len(tt.tokens) >= 2
         assert isinstance(tt, TokenizedText)
+
+
+class TestUnicodeTokenizer:
+    def test_unicode_tokenize_basic(self):
+        """UnicodeTokenizer should handle CJK characters."""
+        from src.tokenizer import UnicodeTokenizer
+        t = UnicodeTokenizer()
+        result = t.tokenize("thymol 百里香酚 500 mg")
+        assert len(result.tokens) > 0
+
+    def test_unicode_tokenize_empty(self):
+        from src.tokenizer import UnicodeTokenizer
+        t = UnicodeTokenizer()
+        result = t.tokenize("")
+        assert len(result.tokens) == 0
+
+    def test_unicode_token_callable(self):
+        """UnicodeTokenizer should be callable."""
+        from src.tokenizer import UnicodeTokenizer
+        t = UnicodeTokenizer()
+        result = t("hello")
+        assert len(result.tokens) > 0
+
+
+class TestFindSentenceRangeEdgeCases:
+    def setup_method(self):
+        self.tokenizer = RegexTokenizer()
+
+    def test_start_out_of_range(self):
+        """find_sentence_range with out-of-range start should run to end."""
+        text = "Roses are red."
+        tt = self.tokenizer.tokenize(text)
+        # start beyond token list: range(start, len(tokens)) is empty
+        rng = find_sentence_range(text, tt.tokens, 999)
+        assert rng is not None
+        assert rng.start_index == 999
+        assert rng.end_index == len(tt.tokens)  # runs to end
+
+    def test_newline_uppercase_boundary(self):
+        """Newline followed by uppercase should be sentence boundary."""
+        text = "First sentence.\nSecond sentence starts here."
+        tt = self.tokenizer.tokenize(text)
+        rng = find_sentence_range(text, tt.tokens, 0)
+        assert rng.end_index > rng.start_index
+
+    def test_ellipsis_not_sentence_end(self):
+        """Ellipsis should not be treated as sentence end."""
+        text = "Wait... what about this part?"
+        tt = self.tokenizer.tokenize(text)
+        rng = find_sentence_range(text, tt.tokens, 0)
+        assert rng.end_index > rng.start_index
+
+    def test_single_token_sentence(self):
+        """Single token should be returned as its own range."""
+        text = "Yes."
+        tt = self.tokenizer.tokenize(text)
+        rng = find_sentence_range(text, tt.tokens, 0)
+        assert rng.end_index > rng.start_index
