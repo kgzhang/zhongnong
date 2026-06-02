@@ -51,6 +51,7 @@ class VocabularyBinding:
     match_fields: list[str] = field(default_factory=list)
     match_mode: str = "exact"
     inject_in_prompt: bool = True
+    value_delimiter: str | None = None  # For TSV cells with comma-separated values
 
 
 @dataclass
@@ -142,13 +143,30 @@ class Vocabulary:
     def _load(self, path: Path) -> None:
         if not path.exists():
             return
+        delimiter = getattr(self.binding, "value_delimiter", None)
         with open(path, encoding="utf-8") as fh:
             reader = csv.DictReader(fh, delimiter="\t")
             for row in reader:
                 self.entries.append(dict(row))
                 key_field = self.binding.key_field
                 if key_field in row:
-                    self.by_name[row[key_field].strip().lower()] = dict(row)
+                    raw = row[key_field].strip()
+                    if delimiter and delimiter in raw:
+                        for part in raw.split(delimiter):
+                            name = self._clean_name(part)
+                            if name:
+                                self.by_name[name.lower()] = dict(row)
+                    else:
+                        name = self._clean_name(raw)
+                        if name:
+                            self.by_name[name.lower()] = dict(row)
+
+    @staticmethod
+    def _clean_name(raw: str) -> str:
+        """Extract base name, stripping parentheticals like '(THY)' or '(FeSO₄)'."""
+        name = raw.strip()
+        name = re.sub(r'\s*\([^)]*\)\s*$', '', name).strip()
+        return name
 
     def lookup(self, name: str) -> dict | None:
         """Case-insensitive exact match."""
@@ -423,6 +441,28 @@ class SchemaRegistry:
     def build_extraction_prompt(self, entity_names: list[str]) -> str:
         """Build extraction prompt from entity metadata."""
         parts: list[str] = []
+
+        # Build explicit field list for each entity
+        field_list_parts = []
+        for ename in entity_names:
+            ed = self.entity_def(ename)
+            llm_fields = self.llm_output_fields(ename)
+            field_names = [f.name for f in llm_fields]
+            field_list_parts.append(
+                f'  {ename}: primary_key="{ed.primary_text}", '
+                f'attributes=[{", ".join(field_names)}]'
+            )
+        field_list = "\n".join(field_list_parts)
+
+        # Format instruction — MUST use English field names for JSON keys
+        parts.append(
+            f'CRITICAL: Output valid JSON with these EXACT English entity types and attribute names.\n'
+            f'Entity types to extract: {", ".join(entity_names)}\n'
+            f'Required fields per entity:\n{field_list}\n'
+            f'JSON format: {{"extractions": [{{"EntityType": "primary_value", "EntityType_attributes": {{"field_name": value, ...}}}}, ...]}}\n'
+            f'ALL attribute keys MUST be in English as specified above. DO NOT translate field names to Chinese.'
+        )
+
         for ename in entity_names:
             ed = self.entity_def(ename)
             parts.append(f"## {ed.display_name} ({ename})")

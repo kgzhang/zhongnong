@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from src.data import Extraction
+from src.data import Document, Extraction
 
 try:
     from lxml import etree
@@ -87,17 +87,102 @@ def extract(
     pmid = sections.get("pmid", "")
     result = ArticleExtractionResult(doi=doi, pmid=pmid)
 
-    if not any(sections.get(k) for k in ("abstract", "methods", "results", "discussion")):
+    if not any(sections.get(k) for k in ("abstract", "methods", "results", "discussion", "body")):
         result.skipped = True
         result.skip_reason = "No extractable sections found"
         return result
 
     # 4-7: 4-phase extraction
-    # This is a scaffold — the full 4-phase orchestration uses the Annotator
-    # with phase-specific templates driven by SchemaRegistry extraction_phases.
-    # For now, return an empty result (extraction is done via the Annotator
-    # directly or through a higher-level pipeline driver).
-    result.warnings.append("4-phase pipeline not yet wired — use Annotator directly")
+    from src.format_handler import FormatHandler
+    from src.prompting import PromptTemplateStructured
+    from src.annotation import Annotator
+
+    fh = FormatHandler(use_fences=model.requires_fence_output)
+    all_extractions: list[Extraction] = []
+    phase_results: dict[str, list[Extraction]] = {}
+
+    # Determine section names for source_location tracking
+    section_name_map = {
+        0: "Materials and Methods",
+        1: "Materials and Methods",
+        2: "Materials and Methods",
+        3: "Results and Discussion",
+    }
+
+    for phase_idx, phase in enumerate(registry.phase_defs()):
+        # Build prompt from entity metadata
+        prompt_text = registry.build_extraction_prompt(phase.extracts)
+
+        # Determine which section text to use
+        if phase_idx == 0:
+            section_text = sections.get("methods") or sections.get("body") or sections.get("abstract") or ""
+        elif phase_idx <= 2:
+            section_text = sections.get("methods") or sections.get("body") or ""
+        else:
+            section_text = sections.get("results") or sections.get("discussion") or sections.get("body") or ""
+
+        if not section_text.strip():
+            result.warnings.append(f"Phase {phase_idx+1} ({phase.name}): no source text available")
+            continue
+
+        section_label = section_name_map.get(phase_idx, "Full Text")
+        source_doc = Document(text=section_text, document_id=f"{pmid}_{section_label.replace(' ', '_')}")
+
+        # Inject context from prior phases into Phase 4
+        additional_context = None
+        if phase.context_from:
+            ctx_parts = []
+            for ctx_phase_name in phase.context_from:
+                ctx_exts = phase_results.get(ctx_phase_name, [])
+                if ctx_exts:
+                    ctx_parts.append(_build_context_from_extractions(ctx_exts))
+            if ctx_parts:
+                additional_context = "\n\n".join(ctx_parts)
+
+        template = PromptTemplateStructured(description=prompt_text)
+        annotator = Annotator(model, template, fh)
+        try:
+            doc_result = annotator.annotate_text(
+                source_doc.text,
+                max_char_buffer=max_char_buffer,
+                additional_context=additional_context,
+                document_id=source_doc.document_id,
+                **kwargs,
+            )
+            phase_exts = doc_result.extractions or []
+        except Exception as e:
+            logger.warning("Phase %d (%s) failed: %s", phase_idx + 1, phase.name, e)
+            result.warnings.append(f"Phase {phase_idx+1} failed: {e}")
+            continue
+
+        all_extractions.extend(phase_exts)
+        phase_results[phase.name] = phase_exts
+
+        # Gate check after Phase 1
+        if phase_idx == 0 and skip_if_no_known_alternative and phase.gate:
+            known_classes = {
+                "Plant_Extract", "Trace_Element", "Organic_Acid", "Probiotic",
+                "Polysaccharides_and_Oligosaccharides", "Enzyme", "Bioactive_Peptides",
+            }
+            alt_exts = [e for e in phase_exts if e.extraction_class == "Alternative"]
+            has_known = any(
+                (e.attributes or {}).get("alternative_class") in known_classes
+                for e in alt_exts
+            )
+            if not has_known:
+                result.skipped = True
+                result.skip_reason = "No known Alternative found (gate check)"
+                result.extractions = all_extractions
+                return result
+
+    # Post-process all extractions
+    for ext in all_extractions:
+        try:
+            registry.post_process(ext)
+        except Exception:
+            pass
+
+    result.extractions = all_extractions
     return result
 
 
@@ -124,6 +209,7 @@ def _parse_article_sections(xml_path: Path) -> dict[str, str]:
         "methods": "",
         "results": "",
         "discussion": "",
+        "body": "",
     }
 
     try:
@@ -144,7 +230,12 @@ def _parse_article_sections(xml_path: Path) -> dict[str, str]:
         # --- Body sections ---
         body = root.find(".//body", nsmap)
         if body is None:
+            # Fallback: try to get text from the entire article
+            result["body"] = _element_text(root, nsmap)
             return result
+
+        # Store full body text as fallback
+        result["body"] = _element_text(body, nsmap)
 
         sections = body.findall(".//sec", nsmap)
         for sec in sections:
@@ -154,10 +245,16 @@ def _parse_article_sections(xml_path: Path) -> dict[str, str]:
 
             if "abstract" in title_text or "abstract" == _get_section_type(sec):
                 result["abstract"] = body_text
-            elif "method" in title_text or "materials and methods" in title_text:
-                result["methods"] = body_text
+            elif "method" in title_text or "materials and methods" in title_text or "materials" in title_text:
+                if result["methods"]:
+                    result["methods"] += "\n\n" + body_text
+                else:
+                    result["methods"] = body_text
             elif "result" in title_text:
-                result["results"] = body_text
+                if result["results"]:
+                    result["results"] += "\n\n" + body_text
+                else:
+                    result["results"] = body_text
             elif "discussion" in title_text or "conclusion" in title_text:
                 if result["discussion"]:
                     result["discussion"] += "\n\n" + body_text
@@ -178,20 +275,29 @@ def _parse_article_sections(xml_path: Path) -> dict[str, str]:
 
 
 def _get_namespace(root) -> dict[str, str]:
-    """Extract namespace map from root element."""
+    """Extract namespace map from PMC XML article.
+
+    PMC article sets have: <pmc-articleset><article xmlns:...="">...
+    The article element carries the namespace declarations for JATS XML.
+    """
     nsmap: dict[str, str] = {}
-    # Iterate through nsmap from the root tag
-    tag = root.tag
-    if "}" in tag:
-        nsmap[""] = tag.split("}")[0].lstrip("{")
-    # Collect all namespaces
-    for elem in root.iter():
-        if "}" in elem.tag:
-            ns = elem.tag.split("}")[0].lstrip("{")
-            if "" not in nsmap:
-                nsmap[""] = ns
-            break
-    return nsmap or {}
+    # Try to get namespaces from the <article> child (not the root <pmc-articleset>)
+    article = root.find("article") if root.tag == "pmc-articleset" else root
+    if article is None:
+        article = root
+    # Use lxml's nsmap on the article element
+    if hasattr(article, 'nsmap') and article.nsmap:
+        for prefix, uri in article.nsmap.items():
+            if prefix is None:
+                nsmap[""] = uri  # default namespace
+            else:
+                nsmap[prefix] = uri
+    # Fallback: look at tag
+    if not nsmap:
+        tag = article.tag
+        if "}" in tag:
+            nsmap[""] = tag.split("}")[0].lstrip("{")
+    return nsmap
 
 
 def _get_section_type(sec) -> str:
@@ -210,6 +316,31 @@ def _element_text(elem, nsmap) -> str:
     except Exception:
         pass
     return " ".join(p for p in parts if p)
+
+
+def _build_context_from_extractions(extractions: list[Extraction]) -> str:
+    """Build a compact context listing from a list of Extractions.
+
+    Used to pass Phase 2+3 results into Phase 4 prompts.
+    """
+    lines: list[str] = []
+    # Group by entity type
+    by_type: dict[str, list[Extraction]] = {}
+    for ext in extractions:
+        by_type.setdefault(ext.extraction_class, []).append(ext)
+
+    for etype, exts in sorted(by_type.items()):
+        lines.append(f"Available {etype}s:")
+        for ext in exts[:30]:  # limit to 30 per type
+            attrs = ext.attributes or {}
+            name = attrs.get("abbreviation") or attrs.get("group_name") or ext.extraction_text
+            extra = ""
+            if etype == "Indicator":
+                extra = f" ({attrs.get('standard_name', '')})"
+            elif etype == "Control_Group":
+                extra = f" ({attrs.get('group_type', '')})"
+            lines.append(f"  - {name}{extra}")
+    return "\n".join(lines)
 
 
 def _build_results_context(design_result, indicator_result) -> str:

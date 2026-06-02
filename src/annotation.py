@@ -189,7 +189,8 @@ class Annotator:
         -------
         AnnotatedDocument
         """
-        doc = Document(text=text)
+        document_id = kwargs.pop("document_id", None)
+        doc = Document(text=text, document_id=document_id)
         results = list(
             self.annotate_documents(
                 [doc],

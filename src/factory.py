@@ -37,11 +37,11 @@ def create_model(
 
 def _kwargs_with_environment_defaults(model_id: str, kwargs: dict) -> dict:
     resolved = dict(kwargs)
-    if "api_key" not in resolved:
+    if not resolved.get("api_key"):
         resolved["api_key"] = os.getenv(
             "ZN_LLM_API_KEY", os.getenv("DEEPSEEK_API_KEY", "")
         )
-    if "base_url" not in resolved:
+    if not resolved.get("base_url"):
         if "deepseek" in model_id.lower():
             resolved["base_url"] = os.getenv(
                 "ZN_LLM_BASE_URL", "https://api.deepseek.com/v1"

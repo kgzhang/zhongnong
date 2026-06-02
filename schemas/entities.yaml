@@ -13,12 +13,14 @@ entities:
     notes: "不要拼接字符串创造不存在的复合实体。原封不动保留原文中的原始英文全称及缩写。"
     vocabulary:
       source: ALTERNATIVE.tsv
-      key_field: standard_name
-      class_field: Alternative_Class
-      subclass_field: Subclass
-      match_fields: [standard_name]
+      key_field: "Alternative (具体物质)"
+      class_field: "Alternative_Class (一级分类)"
+      subclass_field: "Subclass (二级分类)"
+      match_fields: ["Alternative (具体物质)"]
       match_mode: fuzzy
       inject_in_prompt: true
+      # TSV cells contain comma-separated lists like "thymol (THY), carvacrol (CAR)"
+      value_delimiter: ","
     attributes:
       - {name: standard_name, type: string, required: true, source: llm}
       - {name: abbreviation, type: string, required: false, source: llm}
