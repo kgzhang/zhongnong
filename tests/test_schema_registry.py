@@ -45,7 +45,7 @@ class TestSchemaRegistry:
 
     def test_phase_defs(self):
         phases = self.registry.phase_defs()
-        assert len(phases) >= 4
+        assert len(phases) >= 2
         assert phases[0].gate is not None
         assert phases[0].gate.entity == "Alternative"
 

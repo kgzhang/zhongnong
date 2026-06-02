@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from src.extraction import ArticleExtractionResult
+from src.extraction import DocumentExtractionResult
 
 
 # ---------------------------------------------------------------------------
@@ -127,14 +127,14 @@ def _build_node_key(node: GraphNode) -> str:
 
 
 def build_graph(
-    results: list[ArticleExtractionResult],
+    results: list[DocumentExtractionResult],
     registry: Any = None,
 ) -> Graph:
     """Build a deduplicated Graph from a list of article extraction results.
 
     Parameters
     ----------
-    results : list[ArticleExtractionResult]
+    results : list[DocumentExtractionResult]
         Extraction results from one or more articles.
     registry : SchemaRegistry or None
         Schema registry for reference/inline-relation metadata.  When ``None``
@@ -150,7 +150,7 @@ def build_graph(
 
     # First pass: create nodes from all extractions
     for article_result in results:
-        pmid = article_result.pmid
+        pmid = article_result.document_id
 
         for ext in article_result.extractions:
             entity_type = ext.extraction_class
@@ -197,14 +197,14 @@ def build_graph(
 
 
 def _resolve_edges(
-    results: list[ArticleExtractionResult],
+    results: list[DocumentExtractionResult],
     nodes_by_id: dict[str, GraphNode],
     edges: list[GraphEdge],
     registry: Any,
 ) -> None:
     """Resolve edges from inline relations and reference fields."""
     for article_result in results:
-        pmid = article_result.pmid
+        pmid = article_result.document_id
 
         for ext in article_result.extractions:
             entity_type = ext.extraction_class

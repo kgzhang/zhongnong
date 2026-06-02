@@ -17,9 +17,10 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class ArticleExtractionResult:
-    doi: str
-    pmid: str
+class DocumentExtractionResult:
+    """Extraction result for one document — format-agnostic."""
+    document_id: str
+    metadata: dict = field(default_factory=dict)   # format-specific metadata
     extractions: list[Extraction] = field(default_factory=list)
     skipped: bool = False
     skip_reason: str = ""
@@ -36,7 +37,7 @@ def extract(
     max_char_buffer: int | None = None,
     gate_enabled: bool | None = None,
     **kwargs,
-) -> ArticleExtractionResult:
+) -> DocumentExtractionResult:
     """Extract entities from one PMC XML article using 4-phase pipeline.
 
     All defaults come from ``src.config.settings`` unless explicitly overridden.
@@ -64,13 +65,19 @@ def extract(
 
     t0 = time.time()
 
-    # 3. Parse article sections
+    # 3. Parse document — derive ID from filename
     article_path = Path(article_xml)
+    doc_id = article_path.stem  # e.g. "PMC12183824"
     sections = _parse_article_sections(article_path)
 
-    doi = sections.get("doi", "")
-    pmid = sections.get("pmid", "")
-    result = ArticleExtractionResult(doi=doi, pmid=pmid)
+    # Metadata from parser (format-specific: doi, pmid, title, etc.)
+    metadata = {k: v for k, v in sections.items()
+                if k in ("doi", "pmid", "title", "journal")}
+    result = DocumentExtractionResult(document_id=doc_id, metadata=metadata)
+
+    # Populate Literature entity from metadata (not LLM extraction)
+    lit_ext = _make_literature_entity(doc_id, sections)
+    all_extractions: list[Extraction] = [lit_ext] if lit_ext else []
 
     # Sections are resolved per-phase via extraction_phases.yaml.
     # If a phase's required sections are empty, only that phase is skipped.
@@ -81,7 +88,7 @@ def extract(
     from src.annotation import Annotator
 
     fh = FormatHandler(use_fences=model.requires_fence_output)
-    all_extractions: list[Extraction] = []
+    total_phases = len(registry.phase_defs())
     phase_results: dict[str, list[Extraction]] = {}
 
     for phase_idx, phase in enumerate(registry.phase_defs()):
@@ -104,10 +111,10 @@ def extract(
             continue
 
         section_label = preferred[0].replace("_", " ").title()
-        source_doc = Document(text=section_text, document_id=f"{pmid}_{section_label.replace(' ', '_')}")
+        source_doc = Document(text=section_text, document_id=f"{doc_id}_{section_label.replace(' ', '_')}")
 
         # Progress
-        phase_label = f"Phase {phase_idx+1}/4: {phase.name}"
+        phase_label = f"Phase {phase_idx+1}/{total_phases}: {phase.name}"
         text_len = len(section_text)
         logger.info("%s — extracting from %s (%d chars, section=%s)",
                      phase_label, ", ".join(phase.extracts), text_len, section_label)
@@ -166,7 +173,7 @@ def extract(
                     f"Gate check failed: {phase.gate.entity} {phase.gate.condition}"
                 )
                 result.extractions = all_extractions
-                _save_checkpoint(result, all_extractions, pmid, phase_exts)
+                _save_checkpoint(result, all_extractions, doc_id, phase_exts)
                 logger.info("Gate check failed — checkpoint saved")
                 return result
 
@@ -187,7 +194,7 @@ def extract(
     print(f"  Total: {len(all_extractions)} entities in {total_time:.1f}s", flush=True)
 
     # Save checkpoint for successful extraction too
-    _save_checkpoint(result, all_extractions, pmid, all_extractions)
+    _save_checkpoint(result, all_extractions, doc_id, all_extractions)
 
     result.extractions = all_extractions
     return result
@@ -198,15 +205,14 @@ def extract(
 # ---------------------------------------------------------------------------
 
 def _save_checkpoint(
-    result: ArticleExtractionResult,
+    result: DocumentExtractionResult,
     all_extractions: list[Extraction],
-    pmid: str,
+    doc_id: str,
     phase1_exts: list[Extraction],
 ) -> None:
     """Save intermediate extraction results to disk for manual inspection.
 
-    Writes ``data/intermediates/{pmid}.json`` with a human-readable summary
-    of extracted entities, organized by phase.
+    Writes ``data/intermediates/{doc_id}.json``.
     """
     import json as _json
 
@@ -221,8 +227,8 @@ def _save_checkpoint(
         }
 
     payload = {
-        "doi": result.doi,
-        "pmid": pmid,
+        "document_id": doc_id,
+        "metadata": result.metadata,
         "skipped": result.skipped,
         "skip_reason": result.skip_reason,
         "total_entities": len(all_extractions),
@@ -231,13 +237,41 @@ def _save_checkpoint(
         "warnings": result.warnings,
     }
 
-    safe_pmid = pmid or result.doi.replace("/", "_").replace(":", "_") or "unknown"
-    out_path = out_dir / f"{safe_pmid}.json"
+    safe_id = doc_id.replace("/", "_").replace(":", "_") or "unknown"
+    out_path = out_dir / f"{safe_id}.json"
     out_path.write_text(_json.dumps(payload, ensure_ascii=False, indent=2))
     if result.skipped:
         print(f"    ⚠ Gate failed — Phase 1 results saved to {out_path}", flush=True)
     else:
         logger.debug("Checkpoint saved to %s", out_path)
+
+
+def _make_literature_entity(
+    doc_id: str, sections: dict[str, str],
+) -> Extraction | None:
+    """Create a Literature Extraction from document metadata.
+
+    Literature metadata comes from the parser (doi, pmid, title) and is
+    NOT extracted by the LLM.  This keeps the LLM focused on domain entities.
+    """
+    from src.data import Extraction
+
+    attrs = {
+        "doi": sections.get("doi", ""),
+        "pmid": sections.get("pmid", ""),
+        "title": sections.get("title", ""),
+        "journal": sections.get("journal", ""),
+        "evidence_text": "",
+        "source_location": "front-matter",
+    }
+    # Only create if we have at least a title or DOI
+    if not attrs["title"] and not attrs["doi"]:
+        return None
+    return Extraction(
+        extraction_class="Literature",
+        extraction_text=attrs["title"] or doc_id,
+        attributes=attrs,
+    )
 
 
 def _parse_article_sections(xml_path: Path) -> dict[str, str]:
@@ -403,9 +437,9 @@ def _build_results_context(design_result, indicator_result) -> str:
 
     Parameters
     ----------
-    design_result : ArticleExtractionResult
+    design_result : DocumentExtractionResult
         Result from Phase 2 (Experiment Design).
-    indicator_result : ArticleExtractionResult
+    indicator_result : DocumentExtractionResult
         Result from Phase 3 (Indicators).
 
     Returns

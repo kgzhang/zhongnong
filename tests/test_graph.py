@@ -145,12 +145,12 @@ class TestExportNeo4jCsv:
 
 class TestBuildGraph:
     def test_build_empty_results(self):
-        from src.extraction import ArticleExtractionResult
+        from src.extraction import DocumentExtractionResult
         from src.schema_registry import SchemaRegistry
 
         registry = SchemaRegistry()
         results = [
-            ArticleExtractionResult(doi="10.1", pmid="12345", extractions=[]),
+            DocumentExtractionResult(document_id="12345", metadata={"doi": "10.1", "pmid": "12345"}, extractions=[]),
         ]
         graph = build_graph(results, registry)
         assert len(graph.nodes) == 0
@@ -159,7 +159,7 @@ class TestBuildGraph:
     def test_creates_nodes_from_extractions(self):
         """Each Extraction becomes a GraphNode with entity_global_id."""
         from src.data import Extraction
-        from src.extraction import ArticleExtractionResult
+        from src.extraction import DocumentExtractionResult
         from src.schema_registry import SchemaRegistry
 
         registry = SchemaRegistry()
@@ -168,8 +168,8 @@ class TestBuildGraph:
             extraction_text="thymol",
             attributes={"standard_name": "thymol", "alternative_class": "Plant_Extract"},
         )
-        result = ArticleExtractionResult(
-            doi="10.1", pmid="12345", extractions=[ext],
+        result = DocumentExtractionResult(
+            document_id="12345", metadata={"doi": "10.1", "pmid": "12345"}, extractions=[ext],
         )
         graph = build_graph([result], registry)
         assert len(graph.nodes) == 1
@@ -182,7 +182,7 @@ class TestBuildGraph:
     def test_deduplicates_global_entity_across_articles(self):
         """Same Alternative in two articles → one node with merged source_pmids."""
         from src.data import Extraction
-        from src.extraction import ArticleExtractionResult
+        from src.extraction import DocumentExtractionResult
         from src.schema_registry import SchemaRegistry
 
         registry = SchemaRegistry()
@@ -195,8 +195,8 @@ class TestBuildGraph:
             attributes={"standard_name": "thymol"},
         )
         results = [
-            ArticleExtractionResult(doi="10.1", pmid="111", extractions=[ext1]),
-            ArticleExtractionResult(doi="10.2", pmid="222", extractions=[ext2]),
+            DocumentExtractionResult(document_id="111", metadata={"doi": "10.1", "pmid": "111"}, extractions=[ext1]),
+            DocumentExtractionResult(document_id="222", metadata={"doi": "10.2", "pmid": "222"}, extractions=[ext2]),
         ]
         graph = build_graph(results, registry)
         assert len(graph.nodes) == 1  # deduped
@@ -207,7 +207,7 @@ class TestBuildGraph:
     def test_article_scoped_entities_not_deduped(self):
         """Result entities from different articles get different IDs."""
         from src.data import Extraction
-        from src.extraction import ArticleExtractionResult
+        from src.extraction import DocumentExtractionResult
         from src.schema_registry import SchemaRegistry
 
         registry = SchemaRegistry()
@@ -220,8 +220,8 @@ class TestBuildGraph:
             attributes={"direction": "increased"},
         )
         results = [
-            ArticleExtractionResult(doi="10.1", pmid="111", extractions=[ext1]),
-            ArticleExtractionResult(doi="10.2", pmid="222", extractions=[ext2]),
+            DocumentExtractionResult(document_id="111", metadata={"doi": "10.1", "pmid": "111"}, extractions=[ext1]),
+            DocumentExtractionResult(document_id="222", metadata={"doi": "10.2", "pmid": "222"}, extractions=[ext2]),
         ]
         graph = build_graph(results, registry)
         # Result is article-scoped → two separate nodes
@@ -232,7 +232,7 @@ class TestBuildGraph:
     def test_resolves_reference_edges(self):
         """Result.indicator_abbreviation reference creates corresponds_to edge."""
         from src.data import Extraction
-        from src.extraction import ArticleExtractionResult
+        from src.extraction import DocumentExtractionResult
         from src.schema_registry import SchemaRegistry
 
         registry = SchemaRegistry()
@@ -250,8 +250,8 @@ class TestBuildGraph:
                 "source_location": "Results",
             },
         )
-        result = ArticleExtractionResult(
-            doi="10.1", pmid="12345", extractions=[ind_ext, res_ext],
+        result = DocumentExtractionResult(
+            document_id="12345", metadata={"doi": "10.1", "pmid": "12345"}, extractions=[ind_ext, res_ext],
         )
         graph = build_graph([result], registry)
         assert len(graph.nodes) == 2
@@ -268,19 +268,19 @@ class TestBuildGraph:
     def test_skips_empty_extraction_text(self):
         """Extractions with empty text should be skipped."""
         from src.data import Extraction
-        from src.extraction import ArticleExtractionResult
+        from src.extraction import DocumentExtractionResult
         from src.schema_registry import SchemaRegistry
 
         registry = SchemaRegistry()
         ext = Extraction(extraction_class="Alternative", extraction_text="")
-        result = ArticleExtractionResult(doi="10.1", pmid="12345", extractions=[ext])
+        result = DocumentExtractionResult(document_id="12345", metadata={"doi": "10.1", "pmid": "12345"}, extractions=[ext])
         graph = build_graph([result], registry)
         assert len(graph.nodes) == 0
 
     def test_merge_properties_on_dedup(self):
         """First article's properties take priority on dedup."""
         from src.data import Extraction
-        from src.extraction import ArticleExtractionResult
+        from src.extraction import DocumentExtractionResult
         from src.schema_registry import SchemaRegistry
 
         registry = SchemaRegistry()
@@ -293,8 +293,8 @@ class TestBuildGraph:
             attributes={"standard_name": "thymol", "cas_number": "89-83-8"},
         )
         results = [
-            ArticleExtractionResult(doi="10.1", pmid="111", extractions=[ext1]),
-            ArticleExtractionResult(doi="10.2", pmid="222", extractions=[ext2]),
+            DocumentExtractionResult(document_id="111", metadata={"doi": "10.1", "pmid": "111"}, extractions=[ext1]),
+            DocumentExtractionResult(document_id="222", metadata={"doi": "10.2", "pmid": "222"}, extractions=[ext2]),
         ]
         graph = build_graph(results, registry)
         assert len(graph.nodes) == 1

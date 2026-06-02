@@ -1,6 +1,6 @@
 phases:
-  phase_1_gate:
-    description: "Identify core entities for gate check (scan methods/body first)"
+  gate:
+    description: "Scan for core entities — gate check before full extraction"
     sections: [methods, body, abstract]
     extracts: [Alternative, Composite_Product]
     gate:
@@ -8,18 +8,10 @@ phases:
       condition: "classification not in ['Other', '', 'unmatched']"
       on_fail: skip_article
 
-  phase_2_design:
-    description: "Extract experiment design, interventions, and animal parameters"
-    sections: [methods, body]
-    extracts: [Literature, Experiment, Swine_Model, Swine, Intervention, Control_Group]
-
-  phase_3_indicators:
-    description: "Extract measured indicators, tissue sites, and assay methods"
-    sections: [methods, body]
-    extracts: [Tissue_Site, Indicator, Method]
-
-  phase_4_results:
-    description: "Extract all statistically evaluated results with effect directions"
-    sections: [results, discussion, body]
-    extracts: [Result]
-    context_from: [phase_2_design, phase_3_indicators]
+  bulk:
+    description: "Extract all remaining entities from the full document"
+    sections: [methods, body, results, discussion]
+    extracts:
+      [Experiment, Swine_Model, Swine, Intervention, Control_Group,
+       Tissue_Site, Indicator, Method, Result]
+    context_from: [gate]

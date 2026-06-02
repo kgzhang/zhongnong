@@ -24,7 +24,7 @@ class TestSchemaRegistryLoads:
         from src.schema_registry import SchemaRegistry
         registry = SchemaRegistry(config_dir=SCHEMA_DIR)
         phases = registry.phase_defs()
-        assert len(phases) >= 4
+        assert len(phases) >= 2
         # Phase 1 has gate
         assert phases[0].gate is not None
 
@@ -134,7 +134,7 @@ class TestEndToEndPipeline:
         from src.prompting import PromptTemplateStructured
         from src.annotation import Annotator
         from src.schema_registry import SchemaRegistry
-        from src.extraction import ArticleExtractionResult, _build_results_context
+        from src.extraction import DocumentExtractionResult, _build_results_context
         from src.graph import build_graph, export_neo4j_csv
 
         registry = SchemaRegistry(config_dir=SCHEMA_DIR)
@@ -153,12 +153,9 @@ class TestEndToEndPipeline:
             ]
         })
 
-        # Phase 2 mock: Experiment Design
-        design_json = json.dumps({
+        # Phase 2 mock: Bulk (all remaining entities in one call)
+        bulk_json = json.dumps({
             "extractions": [
-                {"Literature": "Test Title", "Literature_attributes": {
-                    "doi": "10.1234/test", "pmid": "99999", "title": "Test Title",
-                }},
                 {"Intervention": "thymol", "Intervention_attributes": {
                     "intervention_target": "thymol", "dose_value": 500,
                     "dose_unit_original": "mg/kg", "administration_route": "diet",
@@ -167,12 +164,6 @@ class TestEndToEndPipeline:
                 {"Control_Group": "Basal Diet", "Control_Group_attributes": {
                     "group_name": "Basal Diet", "group_type": "basal_control",
                 }},
-            ]
-        })
-
-        # Phase 3 mock: Indicators
-        ind_json = json.dumps({
-            "extractions": [
                 {"Tissue_Site": "jejunal mucosa", "Tissue_Site_attributes": {
                     "site_name": "jejunal mucosa", "site_category": "mucosa",
                 }},
@@ -180,12 +171,6 @@ class TestEndToEndPipeline:
                     "standard_name": "Average Daily Gain", "abbreviation": "ADG",
                     "unit": "g/d", "indicator_category": "macro_phenotype",
                 }},
-            ]
-        })
-
-        # Phase 4 mock: Results
-        res_json = json.dumps({
-            "extractions": [
                 {"Result": "ADG", "Result_attributes": {
                     "indicator_abbreviation": "ADG",
                     "tissue_site": "jejunal mucosa",
@@ -198,7 +183,7 @@ class TestEndToEndPipeline:
             ]
         })
 
-        responses = [alt_json, design_json, ind_json, res_json]
+        responses = [alt_json, bulk_json]
         call_count = [0]
 
         class MultiMockLM:
@@ -261,8 +246,8 @@ class TestEndToEndPipeline:
             assert "classification" in (alt.attributes or {})
 
         # Build graph
-        article_result = ArticleExtractionResult(
-            doi="10.1234/test", pmid="99999", extractions=all_extractions,
+        article_result = DocumentExtractionResult(
+            document_id="99999", metadata={"doi": "10.1234/test", "pmid": "99999"}, extractions=all_extractions,
         )
         graph = build_graph([article_result], registry)
 
@@ -345,7 +330,7 @@ class TestEndToEndPipeline:
     def test_build_results_context(self):
         """_build_results_context should list indicators and control groups."""
         from src.data import Extraction
-        from src.extraction import ArticleExtractionResult, _build_results_context
+        from src.extraction import DocumentExtractionResult, _build_results_context
 
         ind_ext = Extraction(
             extraction_class="Indicator", extraction_text="ADG",
@@ -355,11 +340,11 @@ class TestEndToEndPipeline:
             extraction_class="Control_Group", extraction_text="Basal",
             attributes={"group_name": "Basal Diet", "group_type": "basal_control"},
         )
-        design_result = ArticleExtractionResult(
-            doi="10.1", pmid="1", extractions=[ctrl_ext],
+        design_result = DocumentExtractionResult(
+            document_id="1", metadata={"doi": "10.1", "pmid": "1"}, extractions=[ctrl_ext],
         )
-        indicator_result = ArticleExtractionResult(
-            doi="10.1", pmid="1", extractions=[ind_ext],
+        indicator_result = DocumentExtractionResult(
+            document_id="1", metadata={"doi": "10.1", "pmid": "1"}, extractions=[ind_ext],
         )
 
         context = _build_results_context(design_result, indicator_result)
@@ -368,17 +353,17 @@ class TestEndToEndPipeline:
         assert len(context) > 0
 
     def test_extraction_result_dataclass(self):
-        """ArticleExtractionResult should handle all fields."""
+        """DocumentExtractionResult should handle all fields."""
         from src.data import Extraction
-        from src.extraction import ArticleExtractionResult
+        from src.extraction import DocumentExtractionResult
 
-        r = ArticleExtractionResult(
-            doi="10.1/test", pmid="12345",
+        r = DocumentExtractionResult(
+            document_id="12345", metadata={"doi": "10.1/test", "pmid": "12345"},
             extractions=[Extraction(extraction_class="Alt", extraction_text="test")],
             skipped=False, skip_reason="", warnings=["warning1"],
         )
-        assert r.doi == "10.1/test"
-        assert r.pmid == "12345"
+        assert r.metadata.get("doi") == "10.1/test"
+        assert r.document_id == "12345"
         assert len(r.extractions) == 1
         assert not r.skipped
         assert len(r.warnings) == 1
