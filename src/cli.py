@@ -30,6 +30,15 @@ def extract(xml, output_dir, skip_gate):
     click.echo(f"Entities: {len(result.extractions)}")
     if result.skipped:
         click.echo(f"SKIPPED: {result.skip_reason}")
+        click.echo(f"Checkpoint saved to data/intermediates/ for inspection")
+        # Show what was extracted anyway
+        type_counts: dict[str, int] = {}
+        for ext in result.extractions:
+            type_counts[ext.extraction_class] = type_counts.get(ext.extraction_class, 0) + 1
+        if type_counts:
+            click.echo("Phase 1 extractions:")
+            for t, c in sorted(type_counts.items()):
+                click.echo(f"  {t}: {c}")
         return
 
     # Show entity distribution

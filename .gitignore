@@ -7,4 +7,4 @@ data/
 *.egg-info/
 .pytest_cache/
 .coverage
-.env
+.envdata/intermediates/
