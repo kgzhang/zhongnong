@@ -12,95 +12,94 @@
 The pipeline faithfully reproduces langextract's layered architecture. Each layer is an isolated, testable abstraction with a single purpose:
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Extraction API                                │
-│  src/extraction.py  —  extract() main entry point               │
-│  Configures all layers, runs the full pipeline                   │
-└────────────────────────────┬────────────────────────────────────┘
-                             │
-        ┌────────────────────┼────────────────────┐
-        ▼                    ▼                     ▼
-┌──────────────┐  ┌──────────────────┐  ┌──────────────────┐
-│   Factory     │  │   Annotation     │  │   Graph Builder   │
-│ src/factory  │  │ src/annotation  │  │ src/graph.py      │
-│              │  │                  │  │                   │
-│ ModelConfig  │  │ Annotator:       │  │ merge entities    │
-│ create_model │  │ chunk→prompt→    │  │ dedup globally    │
-│ provider     │  │ infer→resolve    │  │ resolve edges     │
-│ routing      │  │ →align→emit      │  │ export TSV        │
-└──────┬───────┘  └────────┬─────────┘  └──────────────────┘
-       │                   │
-       │    ┌──────────────┼──────────────┐
-       │    │              │              │
-       ▼    ▼              ▼              ▼
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│   Providers   │  │   Prompting  │  │   Resolver    │
-│ src/providers │  │src/prompting│  │src/resolver  │
-│              │  │              │  │              │
-│ BaseLanguage  │  │ Prompt       │  │ Abstract      │
-│ Model ABC     │  │ Template     │  │ Resolver ABC  │
-│              │  │ Structured   │  │              │
-│ OpenAICompat  │  │ QAPrompt     │  │ Resolver:     │
-│ Provider      │  │ Generator    │  │ parse + align │
-│              │  │              │  │              │
-│ apply_schema  │  │ PromptBuilder│  │ WordAligner:  │
-│ infer(batch)  │  │ ContextAware │  │ difflib exact │
-│ fence_output  │  │ PromptBuilder│  │ + LCS fuzzy   │
-└──────┬───────┘  └──────────────┘  └──────────────┘
+                    ┌──────────────────────────────────┐
+                    │  schemas/                         │
+                    │  entities.yaml + relations.yaml   │
+                    │  + extraction_phases.yaml         │
+                    │  (EXTERNAL DOMAIN CONFIG)          │
+                    └──────────────┬───────────────────┘
+                                   │ loads at startup
+                                   ▼
+                    ┌──────────────────────────────────┐
+                    │  SchemaRegistry                   │
+                    │  src/schema_registry.py           │
+                    │  (BRIDGE: config → typed API)     │
+                    └──────────────┬───────────────────┘
+                                   │ used by all layers
+        ┌──────────────┬───────────┼───────────┬──────────────┐
+        ▼              ▼           ▼           ▼              ▼
+┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────────┐
+│   Factory     │ │   Annotation │ │   Graph       │ │  Extraction API  │
+│ src/factory  │ │src/annotation│ │ src/graph.py  │ │ src/extraction.py│
+│              │ │              │ │               │ │                  │
+│ ModelConfig  │ │ Annotator:   │ │ merge→dedup   │ │ extract() entry  │
+│ create_model │ │ chunk→prompt→│ │ resolve edges │ │ 4-phase pipeline │
+│ provider     │ │ infer→resolve│ │ export Neo4j   │ │ per article      │
+│ routing      │ │ →align→emit  │ │ CSV            │ │                  │
+└──────┬───────┘ └──────┬───────┘ └──────────────┘ └──────────────────┘
+       │                │
+       ▼                ▼
+┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+│   Providers   │ │   Prompting  │ │   Resolver    │ │   Chunking    │
+│ src/providers │ │src/prompting│ │ src/resolver │ │ src/chunking │
+│              │ │              │ │              │ │              │
+│ BaseLanguage  │ │ PromptTemplate│ │ Abstract      │ │ ChunkIterator │
+│ Model ABC     │ │ Structured   │ │ Resolver ABC  │ │ (token-level  │
+│              │ │              │ │              │ │  sentence-    │
+│ OpenAICompat  │ │ QAPrompt     │ │ Resolver:     │ │  boundary     │
+│ Provider      │ │ Generator    │ │ parse + align │ │  aware)       │
+│              │ │              │ │              │ │              │
+│ Capability    │ │ PromptBuilder│ │ WordAligner:  │ │ TextChunk     │
+│ Detection     │ │ ContextAware │ │ difflib exact │ │ make_batches  │
+│ Fallback Chain│ │ PromptBuilder│ │ + LCS fuzzy   │ │              │
+└──────┬───────┘ └──────────────┘ └──────────────┘ └──────────────┘
        │
        ▼
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│    Schema     │  │   Chunking   │  │  Tokenizer    │
-│ src/schema.py │  │src/chunking │  │src/tokenizer │
-│              │  │              │  │              │
-│ BaseSchema   │  │ ChunkIterator│  │ Tokenizer ABC │
-│ ABC          │  │ (token-level │  │              │
-│              │  │  sentence-   │  │ RegexTokenizer│
-│ FormatMode   │  │  boundary    │  │ TokenizedText │
-│ Schema       │  │  aware)      │  │ Token, Token  │
-│              │  │              │  │ Interval,     │
-│ from_examples│  │ TextChunk    │  │ CharInterval  │
-│ to_provider  │  │ make_batches │  │              │
-│ _config      │  │              │  │ tokens_text() │
-└──────────────┘  └──────────────┘  └──────────────┘
+┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+│    Schema     │ │ FormatHandler │ │  Tokenizer    │
+│ src/schema.py │ │src/format    │ │src/tokenizer │
+│              │ │ _handler.py  │ │              │
+│ BaseSchema   │ │              │ │ Tokenizer ABC │
+│ ABC          │ │ JSON/YAML    │ │              │
+│ OpenAISchema │ │ fence detect │ │ RegexTokenizer│
+│              │ │ wrapper mgmt │ │ TokenizedText │
+│ from_registry│ │ parse_output │ │ Token, Char   │
+│ to_provider  │ │ format_ex    │ │ Interval      │
+│ _config      │ │              │ │              │
+└──────────────┘ └──────────────┘ └──────────────┘
        │
        ▼
-┌──────────────┐  ┌──────────────┐
-│ FormatHandler │  │  Data Model  │
-│src/format    │  │ src/data.py  │
-│ _handler.py  │  │              │
-│              │  │ Document     │
-│ JSON/YAML    │  │ ExampleData  │
-│ fence detect │  │ Extraction   │
-│ wrapper mgmt │  │ AnnotatedDoc │
-│ parse_output │  │ CharInterval │
-│ format_ex    │  │ FormatType   │
-└──────────────┘  └──────────────┘
+┌──────────────────────────────────────────────────────┐
+│  Data Model (src/data.py)                             │
+│  Document, Extraction, AnnotatedDocument, ExampleData │
+└──────────────────────────────────────────────────────┘
 ```
 
 ### Layer Summary
 
-| Layer | Module | Role (exactly as langextract) |
-|-------|--------|------|
-| **Data Model** | `src/data.py` | `Document`, `ExampleData`, `Extraction`, `AnnotatedDocument`, `CharInterval`, `FormatType` — the core data types flowing through the pipeline |
-| **Tokenizer** | `src/tokenizer.py` | `Tokenizer` ABC, `RegexTokenizer`, `TokenizedText`, `Token`, `TokenInterval`, `CharInterval` — regex/unicode tokenization for alignment |
-| **Chunking** | `src/chunking.py` | `ChunkIterator` (token-level, sentence-boundary-aware), `SentenceIterator`, `TextChunk`, `make_batches_of_textchunk` |
-| **Format Handler** | `src/format_handler.py` | `FormatHandler` — centralized JSON/YAML format, fence extraction, wrapper key management, `format_extraction_example()`, `parse_output()` |
-| **Schema** | `src/schema.py` | `BaseSchema` ABC, `FormatModeSchema` — generates provider-specific structured output config from extraction targets |
-| **Providers** | `src/providers/` | `BaseLanguageModel` ABC, `OpenAICompatProvider` — `infer(batch_prompts)`, `apply_schema()`, `requires_fence_output`, `set_fence_output()` |
-| **Prompting** | `src/prompting.py` | `PromptTemplateStructured`, `QAPromptGenerator`, `PromptBuilder`, `ContextAwarePromptBuilder` — Q/A-format few-shot prompting with cross-chunk context |
-| **Resolver** | `src/resolver.py` | `AbstractResolver` ABC, `Resolver`, `WordAligner` — parse LLM output into `Extraction` objects, align to source text (difflib exact + LCS fuzzy) |
-| **Annotation** | `src/annotation.py` | `Annotator` — orchestrates chunk→prompt→infer→resolve→align→emit, streaming with batch parallelism, multi-pass extraction |
-| **Factory** | `src/factory.py` | `ModelConfig`, `create_model()` — provider resolution, environment-based defaults, schema constraint injection |
-| **Extraction API** | `src/extraction.py` | `extract()` — main entry: configure model, schema, format handler, resolver; run annotation; return annotated documents |
-| **Glossary** | `src/glossary.py` | `GlossaryIndex` — TSV loader, exact+fuzzy matching (domain-specific, not in langextract) |
-| **Graph** | `src/graph.py` | Entity dedup, edge resolution, `nodes.tsv` + `edges.tsv` export (domain-specific output format) |
+| # | Layer | Module | Role |
+|---|-------|--------|------|
+| — | **Schema Config** | `schemas/*.yaml` | External domain model — entities, attributes, relations (NOT code) |
+| 3 | **Schema Registry** | `src/schema_registry.py` | Bridge: loads YAML config → typed API for all layers |
+| 2 | **Data Model** | `src/data.py` | `Document`, `Extraction`, `AnnotatedDocument`, `ExampleData` — all config-driven |
+| 4 | **Tokenizer** | `src/tokenizer.py` | `Tokenizer` ABC, `RegexTokenizer`, `TokenizedText`, `Token` — regex/unicode tokenization |
+| 5 | **Chunking** | `src/chunking.py` | `ChunkIterator` (token-level, sentence-boundary-aware), `TextChunk`, batching |
+| 6 | **Format Handler** | `src/format_handler.py` | `FormatHandler` — JSON/YAML, fence extraction, wrapper keys |
+| 7 | **Schema** | `src/schema.py` | `BaseSchema` ABC → `OpenAISchema` — from_registry() → response_format |
+| 8 | **Providers** | `src/providers/` | `BaseLanguageModel` ABC, `OpenAICompatProvider` + capability detection + fallback |
+| 9 | **Prompting** | `src/prompting.py` | `PromptTemplateStructured`, `QAPromptGenerator`, `ContextAwarePromptBuilder` |
+| 10 | **Resolver** | `src/resolver.py` | `AbstractResolver`, `WordAligner` — parse + align (difflib + LCS fuzzy) |
+| 11 | **Annotation** | `src/annotation.py` | `Annotator` — chunk→prompt→infer→resolve→align→emit, streaming, multi-pass |
+| 12 | **Factory** | `src/factory.py` | `ModelConfig`, `create_model()` — provider routing, env defaults |
+| 13 | **Extraction API** | `src/extraction.py` | `extract()` — 4-phase per-article pipeline |
+| 13 | **Glossary** | `src/glossary.py` | `GlossaryIndex` — TSV loader, exact+fuzzy match |
+| 13 | **Graph** | `src/graph.py` | Entity dedup, edge resolution, Neo4j CSV export |
 
 ---
 
 ## 2. Data Model (`src/data.py`)
 
-Faithful reproduction of langextract's `core/data.py` types, adapted for the zhongnong domain.
+Faithful reproduction of langextract's `core/data.py` types. Entity types and relations are NOT hardcoded — they are loaded from external configuration files (Section 3).
 
 ```python
 # FormatType — enum for output format
@@ -124,14 +123,14 @@ class AlignmentStatus(enum.Enum):
 # Extraction — extracted entity with position + attributes
 @dataclass
 class Extraction:
-    extraction_class: str          # entity type (e.g. "Alternative", "Result")
+    extraction_class: str          # entity type name (from config, e.g. "Alternative")
     extraction_text: str           # primary display text
     char_interval: CharInterval | None = None
     alignment_status: AlignmentStatus | None = None
     extraction_index: int | None = None
     group_index: int | None = None
     description: str | None = None
-    attributes: dict[str, Any] | None = None  # all other fields
+    attributes: dict[str, Any] | None = None  # typed according to config
     _token_interval: TokenInterval | None = None
 
 # Document — input to the pipeline
@@ -155,49 +154,519 @@ class AnnotatedDocument:
     document_id: str | None = None
 ```
 
-**Key design choice:** `Extraction.attributes` is a `dict[str, Any]` carrying ALL entity-specific fields beyond `extraction_class` + `extraction_text`. This matches langextract's model where a single `Extraction` type carries heterogeneous entity data via attributes. The alternative (per-entity-type Pydantic models) would fragment the resolver, alignment, and annotation layers that all operate on the uniform `Extraction` type.
-
-### Domain Entity Types (within Extraction)
-
-Each entity type is encoded as an `Extraction` with `extraction_class` set to the type name and `attributes` carrying the type-specific fields:
-
-| extraction_class | extraction_text | Key attributes |
-|---|---|---|
-| `Alternative` | standard_name | alternative_class, abbreviation, cas_number, source_organism, subclass, match_source, original_text, evidence_text, source_location |
-| `Composite_Product` | product_name | manufacturer, is_commercial, components (JSON list), evidence_text, source_location |
-| `Swine` | breed | sex, age, physiological_stage, initial_body_weight, sample_size, evidence_text, source_location |
-| `Intervention` | intervention_target | dose_value, dose_unit_original, dose_unit_standard, administration_route, duration, basal_diet, positive_control, evidence_text, source_location |
-| `Control_Group` | group_name | group_type, description, evidence_text, source_location |
-| `Tissue_Site` | site_name | site_category, evidence_text, source_location |
-| `Indicator` | abbreviation | standard_name, unit, indicator_category, measurement_method, measured_in, evidence_text, source_location |
-| `Method` | method_name | description, evidence_text, source_location |
-| `Result` | indicator_abbreviation | tissue_site, direction, relation_type, significance_level, p_value, p_value_original_text, corrected_significance, effect_size, time_point, subgroup, compared_to_group, evidence_text, source_location |
-| `Abstract_Conclusion` | conclusion_text | has_marker_phrase |
-
-### Relation Types
-
-Relations are defined as enums, resolved during graph building from co-extracted data:
-
-```python
-class RelationType(str, Enum):
-    HAS_COMPONENT = "has_component"
-    MEASURED_IN = "measured_in"
-    USES_METHOD = "uses_method"
-    CORRESPONDS_TO = "corresponds_to"
-    OCCURS_IN = "occurs_in"
-    COMPARED_TO = "compared_to"
-    INCREASES = "increases"
-    DECREASES = "decreases"
-    UPREGULATES = "upregulates"
-    DOWNREGULATES = "downregulates"
-    ENRICHES = "enriches"
-    DEPLETES = "depletes"
-    AFFECTS = "affects"
-```
+**Key design choice:** `Extraction` is a uniform generic type. Entity-specific fields live in `attributes: dict[str, Any]`. The `extraction_class` field holds the entity type name (e.g. `"Alternative"`, `"Result"`). All typing, validation, and schema generation rules come from the external configuration — NOT from per-entity Python classes. This keeps the entire pipeline domain-agnostic and config-driven.
 
 ---
 
-## 3. Tokenizer (`src/tokenizer.py`)
+## 3. Schema Registry — External Configuration Layer
+
+Entity types, their attributes, and relationship definitions live in external YAML files. A `SchemaRegistry` loads these at startup and serves as the single source of truth for every layer that needs entity/relation metadata.
+
+### 3.1 Configuration Files
+
+**`schemas/entities.yaml`** — defines all entity types, their attributes, types, constraints:
+
+```yaml
+# Each entity type defines: display_name, description, primary_text_field,
+# and a list of attribute fields with types and constraints.
+entities:
+  Alternative:
+    display_name: "抗生素替代物物质"
+    description: "Antibiotic alternative substance (specific active ingredient)"
+    primary_text: standard_name     # which field becomes extraction_text
+    attributes:
+      - name: standard_name
+        type: string
+        required: true
+      - name: abbreviation
+        type: string
+        required: false
+      - name: cas_number
+        type: string
+        required: false
+      - name: source_organism
+        type: string
+        required: false
+      - name: is_synthetic
+        type: boolean
+        required: false
+      - name: alternative_class
+        type: enum
+        values: [Plant_Extract, Trace_Element, Organic_Acid, Probiotic,
+                 Polysaccharides_and_Oligosaccharides, Enzyme, Bioactive_Peptides, Other]
+      - name: subclass
+        type: string
+        required: false
+      - name: match_source
+        type: enum
+        values: [词表精确匹配, 词表同义映射, 词表模糊匹配, Other_未匹配]
+      - name: original_text
+        type: string
+        required: true
+      - name: evidence_text
+        type: text
+        required: true
+      - name: source_location
+        type: string
+        required: true
+
+  Alternative_Class:
+    display_name: "物质分类"
+    description: "Classification node for aggregation queries"
+    primary_text: class_name
+    attributes:
+      - name: class_name
+        type: string
+        required: true
+      - name: level
+        type: integer
+        required: false
+      - name: description
+        type: text
+        required: false
+
+  Composite_Product:
+    display_name: "复合制剂产品"
+    primary_text: product_name
+    attributes:
+      - name: product_name
+        type: string
+        required: true
+      - name: manufacturer
+        type: string
+        required: false
+      - name: is_commercial
+        type: boolean
+        required: false
+      - name: evidence_text
+        type: text
+        required: true
+      - name: source_location
+        type: string
+        required: true
+    # Co-extracted inline relationships (resolved during graph build)
+    inline_relations:
+      - name: has_component
+        target: [Alternative, Composite_Product]
+        via_field: components
+        multiple: true   # array of component refs
+
+  Literature:
+    display_name: "文献"
+    primary_text: title
+    attributes:
+      - name: doi
+        type: string
+        required: true
+      - name: pmid
+        type: string
+        required: true
+      - name: title
+        type: string
+        required: true
+      - name: journal
+        type: string
+        required: false
+      - name: abstract_conclusion
+        type: text
+        required: false
+      - name: publication_year
+        type: integer
+        required: false
+      - name: publication_date
+        type: string
+        required: false
+      - name: study_design
+        type: enum
+        values: [completely_randomized, randomized_block, factorial, cross_over, other]
+        required: false
+
+  # ... (all 13 entity types from SCHEMA.tsv: Experiment, Swine_Model, Swine,
+  #      Intervention, Control_Group, Tissue_Site, Indicator, Result, Method)
+
+  Result:
+    display_name: "显著性结果"
+    description: "三元组：部位+指标+变化方向"
+    primary_text: indicator_abbreviation  # display the indicator as primary text
+    attributes:
+      - name: direction
+        type: enum
+        values: [increased, decreased, no_significant_change]
+        required: true
+      - name: p_value
+        type: float
+        required: false
+      - name: p_value_original_text
+        type: string
+        required: false
+      - name: corrected_significance
+        type: string
+        required: false
+      - name: effect_size
+        type: string
+        required: false
+      - name: time_point
+        type: string
+        required: false
+      - name: subgroup
+        type: string
+        required: false
+      - name: significance_level
+        type: enum
+        values: [p_less_0.01, p_less_0.05, trend_0.05_0.1, not_significant]
+        required: true
+      - name: evidence_text
+        type: text
+        required: true
+      - name: source_location
+        type: string
+        required: true
+    # Foreign-key references resolved to edges during graph build
+    references:
+      - name: indicator_abbreviation
+        target_entity: Indicator
+        target_field: abbreviation
+        edge_type: corresponds_to
+      - name: tissue_site
+        target_entity: Tissue_Site
+        target_field: site_name
+        edge_type: occurs_in
+      - name: compared_to_group
+        target_entity: Control_Group
+        target_field: group_name
+        edge_type: compared_to
+```
+
+**`schemas/relations.yaml`** — defines all relationship types with source/target constraints:
+
+```yaml
+relations:
+  # 2.1 分类与归属关系
+  belongs_to:
+    description: "物质属于某个一级分类"
+    source: Alternative
+    target: Alternative_Class
+    cardinality: many_to_one
+
+  has_component:
+    description: "复合产品包含某个组分"
+    source: Composite_Product
+    target: [Alternative, Composite_Product]   # union type
+    cardinality: one_to_many
+    co_extracted: true   # resolved from inline data, not separate LLM call
+
+  # 2.2 文献与试验设计关系
+  contains:
+    source: Literature
+    target: Experiment
+    cardinality: one_to_many
+
+  uses_model:
+    source: Experiment
+    target: Swine_Model
+    cardinality: many_to_one
+
+  uses_animal:
+    source: Experiment
+    target: Swine
+    cardinality: many_to_one
+
+  has_intervention:
+    source: Experiment
+    target: Intervention
+    cardinality: one_to_many
+
+  measures_indicator:
+    source: Experiment
+    target: Indicator
+    cardinality: one_to_many
+
+  uses_control:
+    source: Experiment
+    target: Control_Group
+    cardinality: one_to_many
+
+  uses:
+    source: Intervention
+    target: [Alternative, Composite_Product]
+    cardinality: many_to_one
+
+  applied_to:
+    source: Intervention
+    target: Swine_Model
+    cardinality: many_to_one
+
+  # 2.3 指标与组织关系
+  measured_in:
+    source: Indicator
+    target: Tissue_Site
+    cardinality: many_to_one
+    co_extracted: true   # resolved from Indicator.measured_in field
+
+  uses_method:
+    source: Indicator
+    target: Method
+    cardinality: many_to_one
+    co_extracted: true   # resolved from Indicator.measurement_method field
+
+  # 2.4 结果关系
+  increases:
+    source: Intervention
+    target: Result
+    description: "导致指标数值或活性升高"
+
+  decreases:
+    source: Intervention
+    target: Result
+    description: "导致指标数值或活性降低"
+
+  upregulates:
+    source: Intervention
+    target: Result
+    description: "导致基因或蛋白表达上调"
+
+  downregulates:
+    source: Intervention
+    target: Result
+    description: "导致基因或蛋白表达下调"
+
+  enriches:
+    source: Intervention
+    target: Result
+    description: "导致微生物丰度增加"
+
+  depletes:
+    source: Intervention
+    target: Result
+    description: "导致微生物丰度减少"
+
+  corresponds_to:
+    source: Result
+    target: Indicator
+    co_extracted: true   # resolved from Result.indicator_abbreviation reference
+
+  occurs_in:
+    source: Result
+    target: Tissue_Site
+    co_extracted: true   # resolved from Result.tissue_site reference
+
+  compared_to:
+    source: Result
+    target: Control_Group
+    co_extracted: true   # resolved from Result.compared_to_group reference
+
+  # 2.5 属性关系
+  has_synonym:
+    source: Alternative
+    target: Alternative
+    description: "物质之间的同义关系"
+
+  # 2.6 指标间关系
+  leads_to:
+    source: Indicator
+    target: Indicator
+    description: "一个指标的变化导致另一个指标的变化"
+
+  correlates_with:
+    source: Indicator
+    target: Indicator
+    description: "两个指标之间存在统计相关性"
+
+  part_of:
+    source: Indicator
+    target: Indicator
+    description: "子指标属于父指标（层级关系）"
+```
+
+**`schemas/extraction_phases.yaml`** — defines which entities are extracted in each LLM call:
+
+```yaml
+phases:
+  phase_1_alternatives:
+    description: "Extract antibiotic alternatives (GATE)"
+    prompt_file: prompts/alternatives.txt
+    extracts:
+      - Alternative
+      - Alternative_Class
+      - Composite_Product    # co-extracted with component refs
+    gate:
+      entity: Alternative
+      condition: "alternative_class not in ['Other']"
+      on_fail: skip_article
+
+  phase_2_experiment:
+    description: "Extract experiment design parameters"
+    prompt_file: prompts/experiment.txt
+    extracts:
+      - Literature
+      - Experiment
+      - Swine_Model
+      - Swine
+      - Intervention
+      - Control_Group
+
+  phase_3_indicators:
+    description: "Extract indicators, tissue sites, methods"
+    prompt_file: prompts/indicators.txt
+    extracts:
+      - Tissue_Site
+      - Indicator
+      - Method
+
+  phase_4_results:
+    description: "Extract statistically evaluated results"
+    prompt_file: prompts/results.txt
+    extracts:
+      - Result
+    context_from: [phase_2_experiment, phase_3_indicators]  # feed forward
+```
+
+### 3.2 Schema Registry (`src/schema_registry.py`)
+
+The mapping layer that loads external config and provides typed access:
+
+```python
+@dataclass
+class EntityDef:
+    """Definition of one entity type loaded from config."""
+    name: str
+    display_name: str
+    description: str
+    primary_text: str           # which attribute == extraction_text
+    attributes: list[AttributeDef]
+    references: list[ReferenceDef]   # foreign-key style edges
+    inline_relations: list[InlineRelationDef]  # co-extracted edges
+
+@dataclass
+class AttributeDef:
+    name: str
+    type: str                   # string | integer | float | boolean | text | enum
+    required: bool
+    enum_values: list[str] | None = None
+
+@dataclass
+class ReferenceDef:
+    """A field that references another entity (→ edge on graph build)."""
+    name: str                   # field name in this entity
+    target_entity: str
+    target_field: str
+    edge_type: str
+
+@dataclass
+class InlineRelationDef:
+    """A co-extracted relationship stored inline in the entity."""
+    name: str                   # relation type
+    target: list[str]           # allowed target entity types
+    via_field: str
+    multiple: bool = False
+
+@dataclass
+class RelationDef:
+    """Definition of one relationship type loaded from config."""
+    name: str
+    description: str
+    source: str | list[str]
+    target: str | list[str]
+    cardinality: str            # one_to_one | one_to_many | many_to_one | many_to_many
+    co_extracted: bool = False
+
+@dataclass
+class ExtractionPhase:
+    """Definition of one extraction phase."""
+    name: str
+    description: str
+    prompt_file: str
+    extracts: list[str]         # entity type names to extract
+    context_from: list[str] = field(default_factory=list)
+    gate: GateDef | None = None
+
+
+class SchemaRegistry:
+    """Loads entities.yaml + relations.yaml + extraction_phases.yaml.
+    
+    Provides:
+    - entity_def(name) → EntityDef
+    - relation_def(name) → RelationDef
+    - phase_defs() → list[ExtractionPhase]
+    - generate_json_schema(entity_names) → dict  (for OpenAI response_format)
+    - validate_extraction(extraction) → list[str] (errors)
+    - all_entity_names() → list[str]
+    - all_relation_names() → list[str]
+    """
+    
+    def __init__(self, config_dir: str | Path = "schemas"): ...
+    
+    def entity_def(self, name: str) -> EntityDef: ...
+    def relation_def(self, name: str) -> RelationDef: ...
+    def phase_defs(self) -> list[ExtractionPhase]: ...
+    
+    def generate_json_schema(
+        self, entity_names: list[str], strict: bool = True
+    ) -> dict:
+        """Generate OpenAI response_format json_schema for given entity types.
+        
+        Maps each entity's attributes to JSON Schema types:
+        - string → {"type": "string"}
+        - text → {"type": "string"}
+        - integer → {"type": "integer"}
+        - float → {"type": "number"}
+        - boolean → {"type": "boolean"}
+        - enum → {"type": "string", "enum": [...]}
+        
+        Produces the anyOf variant structure that OpenAISchema.from_examples()
+        would, but driven by config instead of example introspection.
+        """
+    
+    def validate_extraction(self, extraction: Extraction) -> list[str]:
+        """Validate one extraction against its entity definition.
+        Returns list of error messages (empty = valid)."""
+    
+    def edge_from_reference(
+        self, source_extraction: Extraction, ref: ReferenceDef
+    ) -> tuple[str, str, str] | None:
+        """Resolve a reference field to (source_id, target_id, edge_type).
+        Returns None if reference value is empty or target not found."""
+    
+    def edges_from_inline(
+        self, extraction: Extraction, rel: InlineRelationDef
+    ) -> list[tuple[str, str, str]]:
+        """Resolve inline co-extracted relations to edge tuples."""
+```
+
+### 3.3 How Config Drives the Pipeline
+
+```
+schemas/entities.yaml ──┐
+schemas/relations.yaml  ─┤
+schemas/extraction_phases.yaml ─┘
+         │
+         ▼
+   SchemaRegistry (loaded once at startup)
+         │
+         ├──→ OpenAISchema.from_config(registry, entity_names)
+         │      → response_format json_schema for LLM calls
+         │
+         ├──→ PromptTemplateStructured.description
+         │      → auto-generated from entity attribute docs
+         │
+         ├──→ Resolver.extract_ordered_extractions()
+         │      → validates attribute types, required fields
+         │
+         ├──→ Graph builder
+         │      → resolves references → edges
+         │      → resolves inline_relations → edges
+         │      → validates edge source/target types
+         │
+         └──→ Neo4j CSV export
+                → entity labels from config
+                → property columns from config
+```
+
+**To add a new entity type:** add an entry to `schemas/entities.yaml`, add relations to `schemas/relations.yaml`, add the entity to the appropriate phase in `schemas/extraction_phases.yaml`. Zero code changes.
+
+---
+
+## 4. Tokenizer (`src/tokenizer.py`)
 
 Faithful reproduction of langextract's `core/tokenizer.py`. Tokenizers are used for chunking (sentence boundary detection) and alignment (matching extraction text to source text), NOT for LLM token counting.
 
@@ -257,7 +726,7 @@ def find_sentence_range(text, tokens, start_idx) -> TokenInterval: ...
 
 ---
 
-## 4. Chunking (`src/chunking.py`)
+## 5. Chunking (`src/chunking.py`)
 
 Faithful reproduction of langextract's `chunking.py`.
 
@@ -316,7 +785,7 @@ This is a thin pre-processing step. The actual chunking pipeline (ChunkIterator 
 
 ---
 
-## 5. Format Handler (`src/format_handler.py`)
+## 6. Format Handler (`src/format_handler.py`)
 
 Faithful reproduction of langextract's `core/format_handler.py`.
 
@@ -360,7 +829,7 @@ class FormatHandler:
 
 ---
 
-## 6. Schema Layer (`src/schema.py`)
+## 7. Schema Layer (`src/schema.py`)
 
 Faithful reproduction of langextract's `core/schema.py`.
 
@@ -439,9 +908,71 @@ class OpenAISchema(BaseSchema):
 
 ---
 
-## 7. Provider Layer (`src/providers/`)
+## 8. Provider Layer (`src/providers/`)
 
 Faithful reproduction of langextract's `core/base_model.py` + `providers/openai.py`.
+
+Extended with **model capability detection** and **fallback chain** to support DeepSeek, Qwen, and other OpenAI-compatible models that differ in their structured-output support levels.
+
+### Model Capability Profiles
+
+Different models support different levels of structured output. The provider detects capabilities from the model ID and adjusts behavior:
+
+| Model Family | `json_schema` (strict) | `json_object` mode | native JSON |
+|-------------|----------------------|-------------------|-------------|
+| OpenAI (gpt-4o, gpt-4o-mini) | ✅ full support | ✅ | ✅ |
+| DeepSeek (deepseek-chat, deepseek-reasoner) | ⚠️ limited (no strict mode) | ✅ | ✅ |
+| Qwen (qwen-max, qwen-plus via DashScope) | ❌ | ✅ (some models) | ⚠️ fences needed |
+| Qwen (qwen2.5 via Ollama/vLLM) | ❌ | ❌ | ❌ fence-only |
+
+**Capability detection** — model ID prefix matching:
+
+```python
+@dataclass
+class ModelCapabilities:
+    supports_json_schema: bool       # response_format json_schema
+    supports_json_schema_strict: bool # strict mode within json_schema
+    supports_json_object: bool       # response_format {type: json_object}
+    supports_system_message: bool    # system role in messages
+    requires_fence_output: bool      # need ```json fences in prompt
+    max_context_tokens: int          # approximate context window size
+
+def detect_capabilities(model_id: str) -> ModelCapabilities:
+    """Detect model capabilities from model ID prefix.
+    
+    DeepSeek: supports json_object, supports json_schema without strict.
+    Qwen DashScope: supports json_object on qwen-max/plus.
+    Qwen open-source: no structured output — fence-only mode.
+    OpenAI: full json_schema with strict.
+    """
+```
+
+### Fallback Chain
+
+When the provider is asked to apply a schema, it tries the best available mode:
+
+```
+1. json_schema (strict)     ← best: model CANNOT deviate from schema
+2. json_schema (non-strict) ← good: schema constraint without strict validation
+3. json_object mode         ← ok: model MUST output valid JSON, enforced by prompt
+4. fence-only mode          ← fallback: prompt asks for ```json, FormatHandler extracts it
+```
+
+```python
+class SchemaApplication:
+    """Result of applying a schema to a provider."""
+    mode: str                   # "json_schema_strict" | "json_schema" | "json_object" | "fence"
+    response_format: dict | None  # API payload for response_format, or None for fence mode
+    prompt_addition: str | None   # Extra prompt text for fence mode ("Output valid JSON in ```json fences.")
+```
+
+The `apply_schema()` method:
+1. Checks `detect_capabilities(model_id)`
+2. Selects the best available mode
+3. If fence-only: sets `requires_fence_output = True`, adds JSON instruction to system prompt
+4. If json_object: sets `response_format: {type: "json_object"}` 
+5. If json_schema: sets `response_format` from schema
+6. Synchronizes `FormatHandler.use_fences` to match
 
 ### Base Language Model (`src/providers/base.py`)
 
@@ -555,7 +1086,7 @@ def _kwargs_with_environment_defaults(model_id, kwargs) -> dict: ...
 
 ---
 
-## 8. Prompting Layer (`src/prompting.py`)
+## 9. Prompting Layer (`src/prompting.py`)
 
 Faithful reproduction of langextract's `prompting.py`.
 
@@ -603,7 +1134,7 @@ The `description` field of `PromptTemplateStructured` carries domain-specific ex
 
 ---
 
-## 9. Resolver Layer (`src/resolver.py`)
+## 10. Resolver Layer (`src/resolver.py`)
 
 Faithful reproduction of langextract's `resolver.py`.
 
@@ -685,7 +1216,7 @@ DEFAULT_INDEX_SUFFIX = "_index"
 
 ---
 
-## 10. Annotation Layer (`src/annotation.py`)
+## 11. Annotation Layer (`src/annotation.py`)
 
 Faithful reproduction of langextract's `annotation.py`.
 
@@ -777,7 +1308,7 @@ This is a thin orchestration layer in `src/extraction.py`, not a modification to
 
 ---
 
-## 11. Extraction API (`src/extraction.py`)
+## 12. Extraction API (`src/extraction.py`)
 
 Main entry point, analogous to langextract's `extraction.extract()`.
 
@@ -821,7 +1352,7 @@ def extract_batch(
 
 ---
 
-## 12. Glossary, Graph, CLI (Domain-Specific Layers)
+## 13. Glossary, Graph, CLI (Domain-Specific Layers)
 
 ### Glossary (`src/glossary.py`)
 
@@ -845,15 +1376,131 @@ class GlossaryMatch:
 
 ```python
 @dataclass
+class GraphNode:
+    id: str                     # deterministic global ID
+    labels: list[str]           # Neo4j labels (entity type + "Entity")
+    properties: dict[str, Any]  # all attributes
+    source_pmids: list[str]     # PMIDs this entity appeared in
+
+@dataclass  
+class GraphEdge:
+    source_id: str
+    target_id: str
+    type: str                   # relation type
+    properties: dict[str, Any]  # evidence_text, source_pmids, etc.
+
+@dataclass
 class Graph:
     nodes: list[GraphNode]
     edges: list[GraphEdge]
 
-def build_graph(extractions: list[ArticleExtractionResult]) -> Graph: ...
-def export_graph(graph: Graph, output_dir: Path) -> None: ...
 
-# Entity dedup: global ID = sha256(f"{entity_type}:{normalized_name}")[:16]
-# Edge resolution: inline foreign keys resolved within each article's entity set
+def build_graph(
+    extractions: list[ArticleExtractionResult],
+    registry: SchemaRegistry,
+) -> Graph:
+    """Phase 1: Collect all extractions from all articles.
+    Phase 2: Deduplicate entities → assign global IDs.
+    Phase 3: Resolve edges (references + inline relations + cross-article).
+    Phase 4: Validate against relation definitions in registry.
+    """
+
+
+def export_neo4j_csv(graph: Graph, output_dir: Path) -> None:
+    """Write nodes.csv and edges.csv in Neo4j CSV import format.
+    
+    These files can be directly imported with:
+      LOAD CSV WITH HEADERS FROM 'file:///nodes.csv' AS row
+      CREATE (n) SET n = row;
+      
+      LOAD CSV WITH HEADERS FROM 'file:///edges.csv' AS row
+      MATCH (a) WHERE a.id = row.source_id
+      MATCH (b) WHERE b.id = row.target_id
+      CREATE (a)-[r:REL_TYPE]->(b) SET r = properties(row);
+    """
+```
+
+### Neo4j CSV Format
+
+**`nodes.csv`** — Neo4j-compatible with `:ID` and `:LABEL` columns:
+
+```csv
+entity_id:ID,entity_type:LABEL,name,doi,pmid,title,journal,abstract_conclusion,publication_year,study_design,standard_name,abbreviation,alternative_class,cas_number,...other_properties...,evidence_text,source_location,source_pmids
+alt_0001,Alternative;Entity,thymol,,,,,,,thymol,THY,Plant_Extract,89-83-8,...,"Thymol was added to the diet...","Table 1","36789012"
+alt_0002,Alternative;Entity,zinc oxide,,,,,,,zinc oxide,ZnO,Trace_Element,1314-13-2,...,"Zinc oxide was supplemented...","Methods 2.3","36789012;36789013"
+lit_0001,Literature;Entity,,10.1016/j.x.2023.100123,36789012,"Effects of thymol on...","Journal of Animal Science","In conclusion, thymol...",2023,completely_randomized,,,,,,,,,"36789012"
+```
+
+**Key Neo4j conventions:**
+- `entity_id:ID` — unique node identifier (use `:ID` suffix in header)
+- `entity_type:LABEL` — semi-colon separated labels for multi-label nodes (use `:LABEL` suffix)
+- All entity properties as columns (sparse: empty string when not applicable to that entity type)
+- `source_pmids` — pipe-separated PMID list for dedup tracking
+- `evidence_text` — quoted with standard CSV escaping
+
+**`edges.csv`** — Neo4j-compatible with `:START_ID`, `:END_ID`, `:TYPE`:
+
+```csv
+source_id:START_ID,target_id:END_ID,relation_type:TYPE,evidence_text,source_pmids,doi,pmid
+alt_0001,altclass_0001,belongs_to,"Thymol (THY) was used as a plant extract...","36789012","10.1016/j.x.2023.100123","36789012"
+comp_0001,alt_0001,has_component,"Product X contained thymol...","36789012","10.1016/j.x.2023.100123","36789012"
+exp_0001_36789012,alt_0001,uses,"Thymol was administered in the diet...","36789012","10.1016/j.x.2023.100123","36789012"
+int_0001_36789012,res_0001_36789012,increases,"Compared with the control group, thymol significantly increased ADG (P<0.05)","36789012","10.1016/j.x.2023.100123","36789012"
+```
+
+**Key Neo4j conventions:**
+- `:START_ID` and `:END_ID` reference `entity_id:ID` values from `nodes.csv`
+- `:TYPE` — the relationship type (Neo4j will create `[:REL_TYPE]` with this value)
+- All edge properties as additional columns (evidence_text, source_pmids, etc.)
+- `source_pmids` and `doi`/`pmid` for provenance tracking
+
+### Entity ID Scheme
+
+Deterministic, no registry needed:
+
+```python
+def entity_global_id(entity_type: str, primary_text: str, 
+                     article_pmid: str | None = None) -> str:
+    """Generate deterministic global entity ID.
+    
+    For article-scoped entities (Result, Experiment, Intervention):
+      → sha256(f"{entity_type}:{article_pmid}:{primary_text}")[:12]
+    
+    For global entities (Alternative, Alternative_Class, Tissue_Site, 
+                       Indicator, Method):
+      → sha256(f"{entity_type}:{normalized_name}")[:12]
+      where normalized_name = primary_text.lower().strip()
+    
+    Prefix: first 4 chars of entity type + "_" + 8 hex chars
+    Example: alt_a1b2c3d4, res_e5f6g7h8
+    """
+```
+
+### Dedup Strategy
+
+Two-tier:
+
+1. **Within article**: `extraction_class` + `extraction_text` + `extraction_index` — Resolver handles ordering, duplicates within a chunk naturally rare.
+
+2. **Across articles** (graph build):
+   - **Global entities** (Alternative, Indicator, Method, Tissue_Site): matched by `(entity_type, normalized_name)`. Same entity appearing in multiple articles → single node, accumulated `source_pmids`.
+   - **Article-scoped entities** (Result, Experiment, Intervention, Swine, Swine_Model, Control_Group, Literature): unique per article. `article_pmid` is part of the ID. Two articles' "Experiment 1" remain separate nodes.
+
+### Edge Resolution Pipeline
+
+```python
+def resolve_edges(
+    article_extractions: list[ArticleExtractionResult],
+    entity_id_map: dict[tuple[str, str, str | None], str],  # → global ID
+    registry: SchemaRegistry,
+) -> list[GraphEdge]:
+    """For each article:
+    1. Co-extracted inline relations (has_component from Composite_Product.components)
+    2. Reference-field edges (Result.indicator_abbreviation → Indicator)
+    3. Explicit relation edges (Intervention → Result via increases/decreases/etc.)
+    4. Validate all edges against relation definitions (source/target type check)
+    5. Drop edges with unresolved targets + log warning
+    """
 ```
 
 ### CLI (`src/cli.py`)
@@ -867,58 +1514,86 @@ zhongnong-kg export --checkpoints data/intermediates/ --output output/
 
 ---
 
-## 13. File Structure
+## 14. File Structure
 
 ```
-src/
-  __init__.py
-  data.py            # Document, Extraction, AnnotatedDocument, ExampleData, CharInterval, FormatType
-  tokenizer.py       # Tokenizer ABC, RegexTokenizer, UnicodeTokenizer, TokenizedText, Token, TokenInterval
-  chunking.py        # ChunkIterator, SentenceIterator, TextChunk, make_batches_of_textchunk
-  format_handler.py  # FormatHandler — JSON/YAML, fences, wrapper, parse_output, format_example
-  schema.py          # BaseSchema ABC, FormatModeSchema
-  prompting.py       # PromptTemplateStructured, QAPromptGenerator, PromptBuilder, ContextAwarePromptBuilder
-  resolver.py        # AbstractResolver, Resolver, WordAligner
-  annotation.py      # Annotator — chunk→prompt→infer→resolve→align→emit
-  extraction.py      # extract() — main entry, configures all layers
-  factory.py         # ModelConfig, create_model
-  
-  providers/
-    __init__.py
-    base.py          # BaseLanguageModel ABC, ScoredOutput
-    openai_compat.py # OpenAICompatProvider — httpx async client
-    schemas/
-      __init__.py
-      openai.py      # OpenAISchema — from_examples → response_format json_schema
-  
-  glossary.py        # GlossaryIndex (domain-specific)
-  graph.py           # build_graph, export_graph (domain-specific)
-  cli.py             # CLI entry point
-  config.py          # Settings (pydantic-settings)
-
-tests/
-  test_data.py
-  test_tokenizer.py
-  test_chunking.py
-  test_format_handler.py
-  test_schema.py
-  test_prompting.py
-  test_resolver.py
-  test_annotation.py
-  test_extraction.py
-  test_factory.py
-  test_provider_openai_compat.py
-  test_glossary.py
-  test_graph.py
-  test_integration.py
-  fixtures/
-    article_1.xml
-    article_2.xml
+zhongnong-kg/
+├── schemas/                         # EXTERNAL CONFIG — domain model, not code
+│   ├── entities.yaml                # 13 entity types with attributes, types, constraints
+│   ├── relations.yaml               # 20+ relation types with source/target constraints
+│   └── extraction_phases.yaml       # 4 extraction phases (what entities per LLM call)
+│
+├── prompts/                         # Prompt templates (one per extraction phase)
+│   ├── alternatives.txt
+│   ├── experiment.txt
+│   ├── indicators.txt
+│   └── results.txt
+│
+├── src/
+│   ├── __init__.py
+│   ├── data.py                      # Document, Extraction, AnnotatedDocument, ExampleData, CharInterval
+│   ├── tokenizer.py                 # Tokenizer ABC, RegexTokenizer, UnicodeTokenizer, TokenizedText, Token, TokenInterval
+│   ├── chunking.py                  # ChunkIterator, SentenceIterator, TextChunk, make_batches_of_textchunk
+│   ├── format_handler.py            # FormatHandler — JSON/YAML, fences, wrapper, parse_output
+│   ├── schema_registry.py           # SchemaRegistry — loads YAML config, validates, generates JSON Schema
+│   ├── schema.py                    # BaseSchema ABC, FormatModeSchema
+│   ├── prompting.py                 # PromptTemplateStructured, QAPromptGenerator, PromptBuilder, ContextAwarePromptBuilder
+│   ├── resolver.py                  # AbstractResolver, Resolver, WordAligner — parse + align
+│   ├── annotation.py                # Annotator — chunk→prompt→infer→resolve→align→emit
+│   ├── extraction.py                # extract() — main entry, configures all layers, 4-phase pipeline
+│   ├── factory.py                   # ModelConfig, create_model — provider resolution + env defaults
+│   │
+│   ├── providers/
+│   │   ├── __init__.py
+│   │   ├── base.py                  # BaseLanguageModel ABC, ScoredOutput, ModelCapabilities
+│   │   ├── capabilities.py          # detect_capabilities(), fallback chain
+│   │   ├── openai_compat.py         # OpenAICompatProvider — httpx async client
+│   │   └── schemas/
+│   │       ├── __init__.py
+│   │       └── openai.py            # OpenAISchema — from_registry() → response_format json_schema
+│   │
+│   ├── glossary.py                  # GlossaryIndex — TSV loader, exact+fuzzy match
+│   ├── graph.py                     # build_graph, resolve_edges, export_neo4j_csv
+│   ├── cli.py                       # CLI entry point (click)
+│   └── config.py                    # Settings (pydantic-settings)
+│
+├── tests/
+│   ├── test_data.py
+│   ├── test_tokenizer.py
+│   ├── test_chunking.py
+│   ├── test_format_handler.py
+│   ├── test_schema_registry.py
+│   ├── test_schema.py
+│   ├── test_prompting.py
+│   ├── test_resolver.py
+│   ├── test_annotation.py
+│   ├── test_extraction.py
+│   ├── test_factory.py
+│   ├── test_provider_capabilities.py
+│   ├── test_provider_openai_compat.py
+│   ├── test_glossary.py
+│   ├── test_graph.py
+│   ├── test_integration.py
+│   └── fixtures/
+│       ├── article_1.xml
+│       ├── article_2.xml
+│       └── llm_responses/           # Recorded LLM outputs for deterministic tests
+│
+├── ALTERNATIVE.tsv                  # Glossary data (reused from v1)
+├── pyproject.toml
+├── .env
+└── Makefile
 ```
+
+**Key structural principles:**
+- `schemas/` is the domain model — entity types, attributes, relations are ALL here, NOT in Python source
+- `prompts/` is the LLM instruction layer — separate from code for easy iteration by domain experts
+- `src/schema_registry.py` is the BRIDGE — loads config, exposes typed API to all other modules
+- Domain code (`glossary.py`, `graph.py`) depends on the registry, not on hardcoded entity lists
 
 ---
 
-## 14. Data Flow (End-to-End)
+## 15. Data Flow (End-to-End)
 
 ```
 ALTERNATIVE.tsv ──→ GlossaryIndex (loaded once)
@@ -963,7 +1638,7 @@ Graph Build:
 
 ---
 
-## 15. Error Handling (langextract pattern)
+## 16. Error Handling (langextract pattern)
 
 | Layer | Error | Handling |
 |-------|-------|----------|
@@ -980,7 +1655,7 @@ Graph Build:
 
 ---
 
-## 16. Configuration
+## 17. Configuration
 
 ```python
 class Settings(BaseSettings):
@@ -1012,7 +1687,7 @@ class Settings(BaseSettings):
 
 ---
 
-## 17. Dependencies
+## 18. Dependencies
 
 ```toml
 [project]
@@ -1024,7 +1699,7 @@ dependencies = [
     "pydantic>=2.0",          # Settings management
     "pydantic-settings>=2.0", # Env-based config
     "lxml>=5.3",              # PMC XML parsing
-    "pyyaml>=6.0",            # YAML parsing in FormatHandler
+    "pyyaml>=6.0",            # YAML config loading (entities.yaml, relations.yaml)
     "regex>=2024",            # Unicode tokenization
     "click>=8.0",             # CLI
 ]
@@ -1036,11 +1711,11 @@ dev = [
 ]
 ```
 
-**Removed from v1:** `dspy`, `litellm`, `pandas`, `biopython`, `jsonschema`, `jinja2` (prompts are Python f-string templates, not Jinja2).
+**Removed from v1:** `dspy`, `litellm`, `pandas`, `biopython`, `jsonschema`, `jinja2`. Prompts are plain text files loaded at runtime. Schema validation is via `SchemaRegistry` not `jsonschema`.
 
 ---
 
-## 18. Testing Strategy
+## 19. Testing Strategy
 
 | Layer | Test Type | Approach |
 |-------|----------|----------|
@@ -1059,7 +1734,7 @@ dev = [
 
 ---
 
-## 19. Non-Goals
+## 20. Non-Goals
 
 - Real-time/streaming API — batch processing only
 - Web UI or dashboard
