@@ -145,7 +145,6 @@ class TestExportNeo4jCsv:
 
 class TestBuildGraph:
     def test_build_empty_results(self):
-        from src.data import Extraction
         from src.extraction import ArticleExtractionResult
         from src.schema_registry import SchemaRegistry
 
@@ -156,3 +155,150 @@ class TestBuildGraph:
         graph = build_graph(results, registry)
         assert len(graph.nodes) == 0
         assert len(graph.edges) == 0
+
+    def test_creates_nodes_from_extractions(self):
+        """Each Extraction becomes a GraphNode with entity_global_id."""
+        from src.data import Extraction
+        from src.extraction import ArticleExtractionResult
+        from src.schema_registry import SchemaRegistry
+
+        registry = SchemaRegistry()
+        ext = Extraction(
+            extraction_class="Alternative",
+            extraction_text="thymol",
+            attributes={"standard_name": "thymol", "alternative_class": "Plant_Extract"},
+        )
+        result = ArticleExtractionResult(
+            doi="10.1", pmid="12345", extractions=[ext],
+        )
+        graph = build_graph([result], registry)
+        assert len(graph.nodes) == 1
+        node = graph.nodes[0]
+        assert node.id.startswith("alte")
+        assert "Alternative" in node.labels
+        assert node.properties["name"] == "thymol"
+        assert "12345" in node.source_pmids
+
+    def test_deduplicates_global_entity_across_articles(self):
+        """Same Alternative in two articles → one node with merged source_pmids."""
+        from src.data import Extraction
+        from src.extraction import ArticleExtractionResult
+        from src.schema_registry import SchemaRegistry
+
+        registry = SchemaRegistry()
+        ext1 = Extraction(
+            extraction_class="Alternative", extraction_text="thymol",
+            attributes={"standard_name": "thymol"},
+        )
+        ext2 = Extraction(
+            extraction_class="Alternative", extraction_text="thymol",
+            attributes={"standard_name": "thymol"},
+        )
+        results = [
+            ArticleExtractionResult(doi="10.1", pmid="111", extractions=[ext1]),
+            ArticleExtractionResult(doi="10.2", pmid="222", extractions=[ext2]),
+        ]
+        graph = build_graph(results, registry)
+        assert len(graph.nodes) == 1  # deduped
+        node = graph.nodes[0]
+        assert "111" in node.source_pmids
+        assert "222" in node.source_pmids
+
+    def test_article_scoped_entities_not_deduped(self):
+        """Result entities from different articles get different IDs."""
+        from src.data import Extraction
+        from src.extraction import ArticleExtractionResult
+        from src.schema_registry import SchemaRegistry
+
+        registry = SchemaRegistry()
+        ext1 = Extraction(
+            extraction_class="Result", extraction_text="ADG increased",
+            attributes={"direction": "increased"},
+        )
+        ext2 = Extraction(
+            extraction_class="Result", extraction_text="ADG increased",
+            attributes={"direction": "increased"},
+        )
+        results = [
+            ArticleExtractionResult(doi="10.1", pmid="111", extractions=[ext1]),
+            ArticleExtractionResult(doi="10.2", pmid="222", extractions=[ext2]),
+        ]
+        graph = build_graph(results, registry)
+        # Result is article-scoped → two separate nodes
+        assert len(graph.nodes) == 2
+        ids = {n.id for n in graph.nodes}
+        assert len(ids) == 2  # different IDs
+
+    def test_resolves_reference_edges(self):
+        """Result.indicator_abbreviation reference creates corresponds_to edge."""
+        from src.data import Extraction
+        from src.extraction import ArticleExtractionResult
+        from src.schema_registry import SchemaRegistry
+
+        registry = SchemaRegistry()
+        ind_ext = Extraction(
+            extraction_class="Indicator", extraction_text="ADG",
+            attributes={"abbreviation": "ADG", "standard_name": "Average Daily Gain"},
+        )
+        res_ext = Extraction(
+            extraction_class="Result", extraction_text="ADG",
+            attributes={
+                "indicator_abbreviation": "ADG",
+                "direction": "increased",
+                "significance_level": "p_less_0.05",
+                "evidence_text": "ADG significantly increased",
+                "source_location": "Results",
+            },
+        )
+        result = ArticleExtractionResult(
+            doi="10.1", pmid="12345", extractions=[ind_ext, res_ext],
+        )
+        graph = build_graph([result], registry)
+        assert len(graph.nodes) == 2
+        # Should have a corresponds_to edge from Result to Indicator
+        ref_edges = [e for e in graph.edges if e.type == "corresponds_to"]
+        assert len(ref_edges) == 1
+        edge = ref_edges[0]
+        # source is Result node, target is Indicator node
+        result_node = next(n for n in graph.nodes if "Result" in n.labels)
+        indicator_node = next(n for n in graph.nodes if "Indicator" in n.labels)
+        assert edge.source_id == result_node.id
+        assert edge.target_id == indicator_node.id
+
+    def test_skips_empty_extraction_text(self):
+        """Extractions with empty text should be skipped."""
+        from src.data import Extraction
+        from src.extraction import ArticleExtractionResult
+        from src.schema_registry import SchemaRegistry
+
+        registry = SchemaRegistry()
+        ext = Extraction(extraction_class="Alternative", extraction_text="")
+        result = ArticleExtractionResult(doi="10.1", pmid="12345", extractions=[ext])
+        graph = build_graph([result], registry)
+        assert len(graph.nodes) == 0
+
+    def test_merge_properties_on_dedup(self):
+        """First article's properties take priority on dedup."""
+        from src.data import Extraction
+        from src.extraction import ArticleExtractionResult
+        from src.schema_registry import SchemaRegistry
+
+        registry = SchemaRegistry()
+        ext1 = Extraction(
+            extraction_class="Alternative", extraction_text="thymol",
+            attributes={"standard_name": "thymol", "abbreviation": "THY"},
+        )
+        ext2 = Extraction(
+            extraction_class="Alternative", extraction_text="thymol",
+            attributes={"standard_name": "thymol", "cas_number": "89-83-8"},
+        )
+        results = [
+            ArticleExtractionResult(doi="10.1", pmid="111", extractions=[ext1]),
+            ArticleExtractionResult(doi="10.2", pmid="222", extractions=[ext2]),
+        ]
+        graph = build_graph(results, registry)
+        assert len(graph.nodes) == 1
+        node = graph.nodes[0]
+        # First article's properties kept; second fills missing
+        assert node.properties.get("abbreviation") == "THY"
+        assert node.properties.get("cas_number") == "89-83-8"
