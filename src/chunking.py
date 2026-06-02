@@ -202,7 +202,14 @@ class SentenceIterator:
             self.tokenized_text.tokens,
             self.curr_token_pos,
         )
-        self.curr_token_pos = interval.end_index
+        # Guard against infinite loop: if no progress, advance by at least 1 token
+        if interval.end_index <= self.curr_token_pos:
+            self.curr_token_pos = min(
+                self.curr_token_pos + 1,
+                len(self.tokenized_text.tokens),
+            )
+        else:
+            self.curr_token_pos = interval.end_index
         return interval
 
 
