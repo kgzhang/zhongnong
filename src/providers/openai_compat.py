@@ -72,9 +72,11 @@ class OpenAICompatProvider(BaseLanguageModel):
         if self._cache is not None:
             cached = self._cache.get(self.model_id, system_msg, prompt)
             if cached is not None:
+                logger.debug("Cache hit — skipping API call (%d char prompt)", len(prompt))
                 return ScoredOutput(score=1.0, output=cached)
 
         # API call with retry
+        logger.info("LLM call: model=%s prompt_len=%d", self.model_id, len(prompt))
         for attempt in range(settings.llm_max_retries):
             try:
                 resp = client.post("/chat/completions", json=body)

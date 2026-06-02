@@ -239,7 +239,9 @@ class Annotator:
         )
 
         # 4. Batch and process
+        batch_count = 0
         for batch in make_batches_of_textchunk(chunk_iter, batch_length):
+            batch_count += 1
             # Build prompts for the batch
             batch_prompts = [
                 prompt_builder.build_prompt(
@@ -248,6 +250,11 @@ class Annotator:
                 )
                 for chunk in batch
             ]
+
+            # Progress: show chunk count and prompt lengths
+            prompt_lens = [len(p) for p in batch_prompts]
+            logger.debug("Batch %d: %d chunks, prompt sizes %s",
+                          batch_count, len(batch), prompt_lens)
 
             # Run inference on the batch
             try:

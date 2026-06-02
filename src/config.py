@@ -127,9 +127,32 @@ def _apply_env_fallbacks(settings: Settings) -> Settings:
     return settings
 
 
+def setup_logging(level: str = "INFO") -> None:
+    """Configure structured logging for the pipeline.
+
+    Output format: ``HH:MM:SS [LEVEL] module: message``
+    """
+    import logging
+    import sys
+
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)-5s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    ))
+    root = logging.getLogger("src")
+    root.setLevel(getattr(logging, level.upper(), logging.INFO))
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.propagate = False
+
+
 settings = Settings()
 settings = _apply_env_fallbacks(settings)
 
 # Normalize model IDs: strip provider prefixes like "deepseek/" or "openai/"
 if "/" in settings.llm_model:
     settings.llm_model = settings.llm_model.split("/", 1)[1]
+
+# Configure logging at module load time
+setup_logging()

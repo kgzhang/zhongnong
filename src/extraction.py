@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -61,6 +62,8 @@ def extract(
 
         model = create_model()
 
+    t0 = time.time()
+
     # 3. Parse article sections
     article_path = Path(article_xml)
     sections = _parse_article_sections(article_path)
@@ -104,11 +107,19 @@ def extract(
             section_text = sections.get("results") or sections.get("discussion") or sections.get("body") or ""
 
         if not section_text.strip():
+            logger.warning("Phase %d (%s): no source text available, skipping", phase_idx + 1, phase.name)
             result.warnings.append(f"Phase {phase_idx+1} ({phase.name}): no source text available")
             continue
 
         section_label = section_name_map.get(phase_idx, "Full Text")
         source_doc = Document(text=section_text, document_id=f"{pmid}_{section_label.replace(' ', '_')}")
+
+        # Progress
+        phase_label = f"Phase {phase_idx+1}/4: {phase.name}"
+        text_len = len(section_text)
+        logger.info("%s — extracting from %s (%d chars, section=%s)",
+                     phase_label, ", ".join(phase.extracts), text_len, section_label)
+        print(f"  {phase_label} ({', '.join(phase.extracts)}) — {text_len} chars", flush=True)
 
         # Inject context from prior phases into Phase 4
         additional_context = None
@@ -123,6 +134,7 @@ def extract(
 
         template = PromptTemplateStructured(description=prompt_text)
         annotator = Annotator(model, template, fh)
+        phase_start = time.time()
         try:
             doc_result = annotator.annotate_text(
                 source_doc.text,
@@ -137,8 +149,18 @@ def extract(
             result.warnings.append(f"Phase {phase_idx+1} failed: {e}")
             continue
 
+        phase_elapsed = time.time() - phase_start
         all_extractions.extend(phase_exts)
         phase_results[phase.name] = phase_exts
+
+        # Count entity types for feedback
+        type_counts: dict[str, int] = {}
+        for ext in phase_exts:
+            type_counts[ext.extraction_class] = type_counts.get(ext.extraction_class, 0) + 1
+        type_summary = ", ".join(f"{t}={c}" for t, c in sorted(type_counts.items()))
+        logger.info("%s done — %d entities in %.1fs: %s",
+                     phase_label, len(phase_exts), phase_elapsed, type_summary)
+        print(f"    → {len(phase_exts)} entities in {phase_elapsed:.1f}s: {type_summary}", flush=True)
 
         # Gate check after Phase 1
         if phase_idx == 0 and skip_if_no_known_alternative and phase.gate:
@@ -163,6 +185,15 @@ def extract(
             registry.post_process(ext)
         except Exception:
             pass
+
+    total_time = time.time() - t0
+    type_counts_final: dict[str, int] = {}
+    for ext in all_extractions:
+        type_counts_final[ext.extraction_class] = type_counts_final.get(ext.extraction_class, 0) + 1
+    logger.info("Extraction complete: %d entities in %.1fs — %s",
+                 len(all_extractions), total_time,
+                 ", ".join(f"{t}={c}" for t, c in sorted(type_counts_final.items())))
+    print(f"  Total: {len(all_extractions)} entities in {total_time:.1f}s", flush=True)
 
     result.extractions = all_extractions
     return result
