@@ -160,168 +160,255 @@ class AnnotatedDocument:
 
 ## 3. Schema Registry — External Configuration Layer
 
-Entity types, their attributes, and relationship definitions live in external YAML files. A `SchemaRegistry` loads these at startup and serves as the single source of truth for every layer that needs entity/relation metadata.
+Entity types, their attributes, extraction guidance, vocabulary bindings, and relationship definitions live in external YAML files. A `SchemaRegistry` loads these at startup and serves as the single source of truth for every layer that needs entity/relation metadata.
+
+### 3.0 Field Classification: LLM vs. Derived
+
+Each attribute in an entity definition is classified by its **source**:
+
+| Source | Meaning | Examples |
+|--------|---------|---------|
+| `llm` | Extracted by the LLM — the model must identify and type this value | `standard_name`, `dose_value`, `direction`, `p_value` |
+| `align` | Derived from alignment position in source text — verbatim copy | `evidence_text` |
+| `structure` | Derived from document section/chunk metadata | `source_location` |
+| `post` | Computed in post-processing (vocabulary match, unit conversion) | `match_source`, `dose_unit_standard` |
+
+**Critical rule:** `evidence_text` and `source_location` are NEVER LLM output fields. The LLM cannot be trusted to copy-paste verbatim — it paraphrases, truncates, and hallucinates. These fields are populated by the pipeline AFTER alignment determines WHERE in the source text the entity was found.
 
 ### 3.1 Configuration Files
 
-**`schemas/entities.yaml`** — defines all entity types, their attributes, types, constraints:
+**`schemas/entities.yaml`** — defines all entity types with rich metadata:
 
 ```yaml
-# Each entity type defines: display_name, description, primary_text_field,
-# and a list of attribute fields with types and constraints.
 entities:
   Alternative:
     display_name: "抗生素替代物物质"
-    description: "Antibiotic alternative substance (specific active ingredient)"
-    primary_text: standard_name     # which field becomes extraction_text
+    description: >
+      抗生素替代物物质（标准分类中的具体有效成分）。
+      Alternative 与 Composite_Product 分开，因为复合产品本身不是单一物质，
+      但其组分可以是 Alternative 或其他 Composite_Product（嵌套复合）。
+    primary_text: standard_name
+    source: llm                # values extracted by LLM
+    extraction_guidance: |
+      ## 提取要求
+      1. 扫描材料与方法部分，识别所有用作抗生素替代物的物质
+      2. 优先将物质名称与下方提供的《Alternative分类》词表进行匹配
+      3. 若物质在词表中 → 使用词表内的标准名称和分类
+      4. 若物质不在词表中 → 标记为 Other，但保留原文原始名称
+      5. 复合制剂按三步处理：拆分组分 → 创建复合节点 → 建立has_component关系
+      6. 严禁将多个实体拼接成一个长字符串作为单一实体名
+    examples:
+      - text: "Pigs were fed a basal diet supplemented with 500 mg/kg thymol (THY, purity ≥ 99%, Sigma-Aldrich)..."
+        extractions:
+          - extraction_class: Alternative
+            extraction_text: thymol
+            attributes:
+              standard_name: thymol
+              abbreviation: THY
+              alternative_class: Plant_Extract
+              subclass: "Volatile oils and Terpenoids"
+              original_text: "thymol (THY, purity ≥ 99%, Sigma-Aldrich)"
+    notes: |
+      重要约束：
+      - 不要拼接字符串创造不存在的复合实体
+      - 原封不动保留原文中的原始英文全称及缩写
+      - 每个组分分别向词表对齐
+    # Vocabulary binding — injected into prompt + used for post-processing
+    vocabulary:
+      source: ALTERNATIVE.tsv
+      key_field: standard_name
+      class_field: Alternative_Class
+      subclass_field: Subclass
+      match_fields: [standard_name, synonyms]   # fields to match against
+      match_mode: fuzzy                          # exact → fuzzy → Other
+      inject_in_prompt: true                     # include full vocabulary in LLM prompt
     attributes:
       - name: standard_name
         type: string
         required: true
+        source: llm
       - name: abbreviation
         type: string
         required: false
+        source: llm
       - name: cas_number
         type: string
         required: false
+        source: llm
       - name: source_organism
         type: string
         required: false
+        source: llm
       - name: is_synthetic
         type: boolean
         required: false
+        source: llm
       - name: alternative_class
         type: enum
         values: [Plant_Extract, Trace_Element, Organic_Acid, Probiotic,
                  Polysaccharides_and_Oligosaccharides, Enzyme, Bioactive_Peptides, Other]
+        required: true
+        source: post              # populated by vocabulary match, not LLM
       - name: subclass
         type: string
         required: false
+        source: post              # populated by vocabulary match
       - name: match_source
         type: enum
         values: [词表精确匹配, 词表同义映射, 词表模糊匹配, Other_未匹配]
+        required: true
+        source: post              # populated by vocabulary match
       - name: original_text
         type: string
         required: true
+        source: llm               # the verbatim name as written in paper
+      # --- DERIVED FIELDS (not in LLM output schema) ---
       - name: evidence_text
         type: text
         required: true
+        source: align             # ← populated from alignment position
       - name: source_location
         type: string
         required: true
-
-  Alternative_Class:
-    display_name: "物质分类"
-    description: "Classification node for aggregation queries"
-    primary_text: class_name
-    attributes:
-      - name: class_name
-        type: string
-        required: true
-      - name: level
-        type: integer
-        required: false
-      - name: description
-        type: text
-        required: false
+        source: structure         # ← populated from document section
 
   Composite_Product:
     display_name: "复合制剂产品"
+    description: "复合制剂产品作为独立实体，通过 has_component 关联各组分"
     primary_text: product_name
+    source: llm
+    extraction_guidance: |
+      ## 复合制剂处理规则（三步法）
+      第一步 — 拆分组分：将复合制剂拆分为多个独立的组分实体
+      第二步 — 创建复合节点：为复合制剂本身创建独立实体，使用文献中的产品名
+      第三步 — 建立关系关联：通过 has_component 连接复合节点与各组分
+      严禁将各组分名称通过字符串拼接的方式命名
+    examples:
+      - text: "Piglets received a commercial multi-strain probiotic (Lactobacillus plantarum + Bacillus subtilis + xylanase, Product X, Novozymes)..."
+        extractions:
+          - extraction_class: Composite_Product
+            extraction_text: "Product X"
+            attributes:
+              product_name: "Product X"
+              manufacturer: "Novozymes"
+              is_commercial: true
+              components:
+                - {standard_name: "Lactobacillus plantarum", entity_type: Alternative}
+                - {standard_name: "Bacillus subtilis", entity_type: Alternative}
+                - {standard_name: "xylanase", entity_type: Alternative}
+    notes: "禁止生成'植物乳杆菌+枯草芽孢杆菌+木聚糖酶'这样的长字符串作为节点名"
     attributes:
       - name: product_name
         type: string
         required: true
+        source: llm
       - name: manufacturer
         type: string
         required: false
+        source: llm
       - name: is_commercial
         type: boolean
         required: false
+        source: llm
+      - name: components
+        type: json_array
+        items: ComponentRef
+        required: true
+        source: llm
       - name: evidence_text
         type: text
         required: true
+        source: align
       - name: source_location
         type: string
         required: true
-    # Co-extracted inline relationships (resolved during graph build)
+        source: structure
     inline_relations:
       - name: has_component
         target: [Alternative, Composite_Product]
         via_field: components
-        multiple: true   # array of component refs
-
-  Literature:
-    display_name: "文献"
-    primary_text: title
-    attributes:
-      - name: doi
-        type: string
-        required: true
-      - name: pmid
-        type: string
-        required: true
-      - name: title
-        type: string
-        required: true
-      - name: journal
-        type: string
-        required: false
-      - name: abstract_conclusion
-        type: text
-        required: false
-      - name: publication_year
-        type: integer
-        required: false
-      - name: publication_date
-        type: string
-        required: false
-      - name: study_design
-        type: enum
-        values: [completely_randomized, randomized_block, factorial, cross_over, other]
-        required: false
-
-  # ... (all 13 entity types from SCHEMA.tsv: Experiment, Swine_Model, Swine,
-  #      Intervention, Control_Group, Tissue_Site, Indicator, Result, Method)
+        multiple: true
 
   Result:
     display_name: "显著性结果"
-    description: "三元组：部位+指标+变化方向"
-    primary_text: indicator_abbreviation  # display the indicator as primary text
+    description: "三元组：部位+指标+变化方向。全量抽取所有报告了统计学比较结果的指标变化。"
+    primary_text: indicator_abbreviation
+    source: llm
+    extraction_guidance: |
+      ## 提取规则
+      1. 全量抽取：所有在原文中明确报告了统计学比较结果的指标变化均需抽取
+      2. 不判断显著性：如实记录原文提供的统计信息，无论P值大小
+      3. 对比基准：所有对比必须是"试验组与对照组"的横向比较
+      4. 关系类型选择：
+         - 生长性能/消化率/肠道形态/代谢物/血液生化 → increases/decreases
+         - 基因/蛋白表达 → upregulates/downregulates
+         - 微生物相对丰度 → enriches/depletes
+         - 无法明确归类 → affects
+      5. direction 必须与 relation_type 语义一致
+    notes: |
+      - 若原文同时报告了绝对空白组与模型攻毒组，对比基准必须是模型攻毒组
+      - 同一句话描述多个指标变化时，拆分为多行独立记录
     attributes:
+      - name: indicator_abbreviation
+        type: string
+        required: true
+        source: llm
+      - name: tissue_site
+        type: string
+        required: false
+        source: llm
       - name: direction
         type: enum
         values: [increased, decreased, no_significant_change]
         required: true
+        source: llm
+      - name: relation_type
+        type: enum
+        values: [increases, decreases, upregulates, downregulates, enriches, depletes, affects]
+        required: true
+        source: llm
       - name: p_value
         type: float
         required: false
+        source: llm
       - name: p_value_original_text
         type: string
         required: false
+        source: llm
       - name: corrected_significance
         type: string
         required: false
+        source: llm
       - name: effect_size
         type: string
         required: false
+        source: llm
       - name: time_point
         type: string
         required: false
+        source: llm
       - name: subgroup
         type: string
         required: false
+        source: llm
       - name: significance_level
         type: enum
         values: [p_less_0.01, p_less_0.05, trend_0.05_0.1, not_significant]
         required: true
+        source: llm
+      - name: compared_to_group
+        type: string
+        required: false
+        source: llm
+      # --- DERIVED FIELDS (not in LLM output schema) ---
       - name: evidence_text
         type: text
         required: true
+        source: align
       - name: source_location
         type: string
         required: true
-    # Foreign-key references resolved to edges during graph build
+        source: structure
     references:
       - name: indicator_abbreviation
         target_entity: Indicator
@@ -335,7 +422,11 @@ entities:
         target_entity: Control_Group
         target_field: group_name
         edge_type: compared_to
+
+  # ... (all 13 entity types with the same metadata pattern)
 ```
+
+**Key structural change:** Every attribute now has a `source` field (`llm` | `align` | `structure` | `post`). When generating the LLM's `response_format` JSON Schema, only `source: llm` fields are included. The `source: align`, `source: structure`, and `source: post` fields are populated by the pipeline after extraction + alignment.
 
 **`schemas/relations.yaml`** — defines all relationship types with source/target constraints:
 
@@ -523,146 +614,164 @@ phases:
 
 ### 3.2 Schema Registry (`src/schema_registry.py`)
 
-The mapping layer that loads external config and provides typed access:
+The mapping layer that loads external config and provides typed access. All entity/relation metadata — including extraction guidance, examples, vocabulary bindings — flows through this single interface.
 
 ```python
 @dataclass
 class EntityDef:
-    """Definition of one entity type loaded from config."""
     name: str
     display_name: str
     description: str
-    primary_text: str           # which attribute == extraction_text
+    primary_text: str
+    extraction_guidance: str       # instructions for LLM prompt
+    examples: list[dict]           # few-shot examples
+    notes: str                     # constraints / caveats
     attributes: list[AttributeDef]
-    references: list[ReferenceDef]   # foreign-key style edges
-    inline_relations: list[InlineRelationDef]  # co-extracted edges
+    references: list[ReferenceDef]
+    inline_relations: list[InlineRelationDef]
+    vocabulary: VocabularyBinding | None  # candidate wordlist binding
 
 @dataclass
 class AttributeDef:
     name: str
-    type: str                   # string | integer | float | boolean | text | enum
+    type: str                     # string | integer | float | boolean | text | enum | json_array
     required: bool
     enum_values: list[str] | None = None
+    source: str = "llm"           # llm | align | structure | post
 
 @dataclass
-class ReferenceDef:
-    """A field that references another entity (→ edge on graph build)."""
-    name: str                   # field name in this entity
-    target_entity: str
-    target_field: str
-    edge_type: str
+class VocabularyBinding:
+    source_path: str              # e.g. "ALTERNATIVE.tsv"
+    key_field: str                # field for primary name
+    class_field: str | None       # field for classification
+    subclass_field: str | None    # field for subclass
+    match_fields: list[str]       # fields to match against
+    match_mode: str               # exact | fuzzy
+    inject_in_prompt: bool        # include vocabulary text in LLM prompt
 
-@dataclass
-class InlineRelationDef:
-    """A co-extracted relationship stored inline in the entity."""
-    name: str                   # relation type
-    target: list[str]           # allowed target entity types
-    via_field: str
-    multiple: bool = False
-
-@dataclass
-class RelationDef:
-    """Definition of one relationship type loaded from config."""
-    name: str
-    description: str
-    source: str | list[str]
-    target: str | list[str]
-    cardinality: str            # one_to_one | one_to_many | many_to_one | many_to_many
-    co_extracted: bool = False
-
-@dataclass
-class ExtractionPhase:
-    """Definition of one extraction phase."""
-    name: str
-    description: str
-    prompt_file: str
-    extracts: list[str]         # entity type names to extract
-    context_from: list[str] = field(default_factory=list)
-    gate: GateDef | None = None
-
+class Vocabulary:
+    """Loaded vocabulary from TSV, keyed by lookup fields."""
+    entries: list[dict]           # raw rows
+    by_name: dict[str, dict]      # exact-match index (lowercase → row)
+    class_hierarchy: dict         # class → subclass → [names]
+    
+    def format_for_prompt(self) -> str:
+        """Render vocabulary as prompt text (classified list with descriptions)."""
+    
+    def lookup(self, name: str) -> dict | None:
+        """Exact match (case-insensitive, whitespace-normalized)."""
+    
+    def fuzzy_match(self, name: str) -> dict | None:
+        """Normalize → substring containment → Levenshtein ≤ 3."""
 
 class SchemaRegistry:
-    """Loads entities.yaml + relations.yaml + extraction_phases.yaml.
-    
-    Provides:
-    - entity_def(name) → EntityDef
-    - relation_def(name) → RelationDef
-    - phase_defs() → list[ExtractionPhase]
-    - generate_json_schema(entity_names) → dict  (for OpenAI response_format)
-    - validate_extraction(extraction) → list[str] (errors)
-    - all_entity_names() → list[str]
-    - all_relation_names() → list[str]
-    """
-    
     def __init__(self, config_dir: str | Path = "schemas"): ...
     
+    # Entity/relation access
     def entity_def(self, name: str) -> EntityDef: ...
     def relation_def(self, name: str) -> RelationDef: ...
     def phase_defs(self) -> list[ExtractionPhase]: ...
+    def all_entity_names(self) -> list[str]: ...
+    def all_relation_names(self) -> list[str]: ...
+    
+    # Vocabulary
+    def vocabulary(self, entity_name: str) -> Vocabulary | None: ...
+    
+    # LLM output schema generation (LLM fields ONLY)
+    def llm_output_fields(self, entity_name: str) -> list[AttributeDef]:
+        """Return only source=llm attributes. Excludes align/structure/post fields."""
     
     def generate_json_schema(
         self, entity_names: list[str], strict: bool = True
     ) -> dict:
-        """Generate OpenAI response_format json_schema for given entity types.
-        
-        Maps each entity's attributes to JSON Schema types:
-        - string → {"type": "string"}
-        - text → {"type": "string"}
-        - integer → {"type": "integer"}
-        - float → {"type": "number"}
-        - boolean → {"type": "boolean"}
-        - enum → {"type": "string", "enum": [...]}
-        
-        Produces the anyOf variant structure that OpenAISchema.from_examples()
-        would, but driven by config instead of example introspection.
+        """Generate OpenAI response_format json_schema.
+        ONLY includes source=llm attributes. evidence_text and source_location
+        are excluded — they are derived post-alignment.
         """
     
-    def validate_extraction(self, extraction: Extraction) -> list[str]:
-        """Validate one extraction against its entity definition.
-        Returns list of error messages (empty = valid)."""
+    # Prompt construction from metadata
+    def build_extraction_prompt(
+        self, entity_names: list[str], include_examples: bool = True
+    ) -> str:
+        """Build extraction prompt from entity metadata.
+        Composes: entity descriptions + extraction_guidance + examples + notes.
+        Injects vocabulary text for entities with inject_in_prompt=True.
+        """
     
+    # Validation
+    def validate_extraction(self, extraction: Extraction) -> list[str]:
+        """Validate extraction against entity definition. Returns errors."""
+    
+    # Post-processing (after alignment)
+    def post_process(
+        self, extraction: Extraction, aligned_text: str | None = None
+    ) -> Extraction:
+        """Apply post-processing: vocabulary match, unit conversion, etc.
+        Populates source=post fields like match_source, alternative_class.
+        """
+    
+    # Edge resolution
     def edge_from_reference(
-        self, source_extraction: Extraction, ref: ReferenceDef
-    ) -> tuple[str, str, str] | None:
-        """Resolve a reference field to (source_id, target_id, edge_type).
-        Returns None if reference value is empty or target not found."""
+        self, source_extraction: Extraction, ref: ReferenceDef,
+        entity_id_map: dict
+    ) -> tuple[str, str, str] | None: ...
     
     def edges_from_inline(
         self, extraction: Extraction, rel: InlineRelationDef
-    ) -> list[tuple[str, str, str]]:
-        """Resolve inline co-extracted relations to edge tuples."""
+    ) -> list[tuple[str, str, str]]: ...
 ```
 
-### 3.3 How Config Drives the Pipeline
+### 3.3 How Config Metadata Flows Into the Pipeline
 
 ```
-schemas/entities.yaml ──┐
-schemas/relations.yaml  ─┤
-schemas/extraction_phases.yaml ─┘
-         │
-         ▼
-   SchemaRegistry (loaded once at startup)
-         │
-         ├──→ OpenAISchema.from_config(registry, entity_names)
-         │      → response_format json_schema for LLM calls
-         │
-         ├──→ PromptTemplateStructured.description
-         │      → auto-generated from entity attribute docs
-         │
-         ├──→ Resolver.extract_ordered_extractions()
-         │      → validates attribute types, required fields
-         │
-         ├──→ Graph builder
-         │      → resolves references → edges
-         │      → resolves inline_relations → edges
-         │      → validates edge source/target types
-         │
-         └──→ Neo4j CSV export
-                → entity labels from config
-                → property columns from config
+schemas/entities.yaml
+  ├─ entity.description ──────────→ PromptTemplateStructured.description
+  ├─ entity.extraction_guidance ──→ Prompt: "## 提取要求" section
+  ├─ entity.examples ─────────────→ ExampleData for few-shot Q/A format
+  ├─ entity.notes ────────────────→ Prompt: "## 重要约束" section
+  ├─ entity.vocabulary ───────────→ Vocabulary.format_for_prompt() injected into prompt
+  │                                 + Vocabulary.lookup() in post-processing
+  ├─ attr.source=llm ─────────────→ OpenAISchema.generate_json_schema()
+  │                                 (ONLY these fields in response_format)
+  ├─ attr.source=align ───────────→ EvidenceExtractor (Section 10.3)
+  │                                 populates evidence_text from aligned char_interval
+  ├─ attr.source=structure ────────→ SourceLocationResolver (Section 10.4)
+  │                                 populates source_location from section/chunk metadata
+  └─ attr.source=post ────────────→ SchemaRegistry.post_process()
+                                    populates match_source, alternative_class, etc.
 ```
 
-**To add a new entity type:** add an entry to `schemas/entities.yaml`, add relations to `schemas/relations.yaml`, add the entity to the appropriate phase in `schemas/extraction_phases.yaml`. Zero code changes.
+### 3.4 Vocabulary Injection Example
+
+For the `Alternative` entity, the `ALTERNATIVE.tsv` vocabulary is:
+1. **Loaded at startup** into `Vocabulary` — builds exact-match index + class hierarchy
+2. **Injected into prompt** via `Vocabulary.format_for_prompt()`:
+   ```
+   ## 候选词表（Alternative分类）
+   
+   ### Plant_Extract — 植物提取物
+   [Volatile oils and Terpenoids] thymol (THY), carvacrol (CAR), eugenol (EUG), ...
+   [Phenols and Flavonoids] curcumin, quercetin, kaempferol, ...
+   [Alkaloids] berberine, sanguinarine, ...
+   ...
+   
+   ### Trace_Element — 微量元素
+   [Inorganic trace elements] Iron (Fe): ferrous sulfate (FeSO₄), ...
+   ...
+   ```
+3. **Matched post-extraction** — after LLM returns entity values, `Vocabulary.lookup()` + `Vocabulary.fuzzy_match()` classify each extracted substance, populating `alternative_class`, `subclass`, and `match_source`.
+
+### 3.5 Field Source Classification (Complete)
+
+| Attribute | Source | Populated By | When |
+|-----------|--------|-------------|------|
+| `standard_name`, `abbreviation`, `original_text` | `llm` | LLM extraction | During `Annotator.annotate_text()` |
+| `dose_value`, `dose_unit_original`, `administration_route` | `llm` | LLM extraction | During `Annotator.annotate_text()` |
+| `direction`, `p_value`, `significance_level`, `relation_type` | `llm` | LLM extraction | During `Annotator.annotate_text()` |
+| `evidence_text` | `align` | `EvidenceExtractor` | After `resolver.align()` — verbatim from source |
+| `source_location` | `structure` | `SourceLocationResolver` | After alignment — section/table/figure metadata |
+| `alternative_class`, `subclass`, `match_source` | `post` | `Vocabulary.lookup()` | After LLM extraction — vocabulary matching |
+| `dose_unit_standard` | `post` | Unit normalizer | After LLM extraction — unit conversion |
 
 ---
 
@@ -1214,7 +1323,106 @@ _FUZZY_ALIGNMENT_MIN_DENSITY = 1/3
 DEFAULT_INDEX_SUFFIX = "_index"
 ```
 
----
+### EvidenceExtractor — Verbatim Evidence from Alignment
+
+The LLM is NOT asked to produce `evidence_text`. Instead, after `resolver.align()` has set `char_interval` on each extraction (pointing to the extraction's position in the source text), the `EvidenceExtractor` derives evidence_text by extracting the surrounding sentence(s) from the source document — guaranteeing verbatim text.
+
+```python
+class EvidenceExtractor:
+    """Derives evidence_text from aligned char_interval in source text.
+    
+    Why not LLM? LLMs paraphrase, truncate, and hallucinate when asked to
+    "copy the exact sentence." Alignment gives us the exact character position
+    — we extract the sentence directly from the source.
+    """
+    
+    def extract_evidence(
+        self,
+        extraction: Extraction,
+        document_text: str,            # full section text
+        tokenized_text: TokenizedText, # tokenized version
+        context_sentences: int = 2,    # include N surrounding sentences
+    ) -> str:
+        """Extract verbatim evidence sentence(s) from source text.
+        
+        Algorithm:
+        1. If extraction.char_interval is None → return "" (unaligned)
+        2. Find the sentence(s) containing the char_interval span
+           using find_sentence_range() from tokenizer
+        3. Expand to include context_sentences before and after
+        4. Extract the exact text from document_text using char intervals
+        5. Return verbatim text (no modification, no truncation)
+        
+        This guarantees evidence_text is an EXACT copy from the source.
+        """
+    
+    def extract_evidence_batch(
+        self,
+        extractions: list[Extraction],
+        document_text: str,
+        tokenized_text: TokenizedText,
+        context_sentences: int = 2,
+    ) -> None:
+        """Mutate extractions in-place, setting evidence_text on each."""
+
+
+class SourceLocationResolver:
+    """Derives source_location from document structure + alignment position.
+    
+    source_location indicates the structured location in the article:
+    - Section-level: "Methods 2.3", "Results 3.1", "Discussion"
+    - Table/Figure: "Table 2", "Figure 3" (detected from nearby text)
+    - Paragraph-level: "Abstract", "Introduction"
+    
+    NOT an LLM output field. Determined from:
+    1. The section Document the extraction came from (document_id metadata)
+    2. The char_interval cross-referenced with article section boundaries
+    3. Table/figure mentions near the aligned span
+    """
+    
+    def resolve_location(
+        self,
+        extraction: Extraction,
+        section_id: str,              # e.g. "methods", "results"
+        section_text: str,
+        char_offset: int,             # chunk's char offset in section
+        table_figure_patterns: list[re.Pattern] | None = None,
+    ) -> str:
+        """Determine structured source location.
+        
+        Algorithm:
+        1. Base location = section_id (e.g. "Methods")
+        2. If section has numbered subsections, detect subsection from
+           char_interval position (e.g. "Methods 2.3")
+        3. Scan text near char_interval for table/figure references
+           (e.g. "Table 2", "Figure 3") using regex
+        4. Return the most specific location string
+        
+        Examples:
+        - "Materials and Methods, §2.3"
+        - "Results, Table 2"
+        - "Discussion, §4.1"
+        """
+    
+    def resolve_batch(
+        self,
+        extractions: list[Extraction],
+        section_id: str,
+        section_text: str,
+        char_offset: int,
+    ) -> None:
+        """Mutate extractions in-place, setting source_location on each."""
+```
+
+### Updated Resolver Pipeline (resolve → align → evidence → location)
+
+```
+resolver.resolve(llm_output)          → Extractions (values only)
+resolver.align(extractions, text)     → Extractions with char_interval set
+EvidenceExtractor.extract_evidence()  → Extractions with evidence_text set
+SourceLocationResolver.resolve()      → Extractions with source_location set
+SchemaRegistry.post_process()         → Extractions with match_source, etc.
+```
 
 ## 11. Annotation Layer (`src/annotation.py`)
 
@@ -1226,18 +1434,21 @@ Faithful reproduction of langextract's `annotation.py`.
 class Annotator:
     """Orchestrates the full extraction pipeline for documents.
     
-    Pipeline:
+    Pipeline (extended from langextract with evidence + location derivation):
       Documents → ChunkIterator → make_batches → 
         for each batch:
           build prompts (ContextAwarePromptBuilder) →
           model.infer(batch_prompts) →
-          resolver.resolve(scored_output) →
-          resolver.align(extractions, chunk_text) →
+          resolver.resolve(scored_output) →       # parse LLM → Extractions
+          resolver.align(extractions, chunk_text) → # set char_interval
+          evidence_extractor.extract(extractions) → # derive evidence_text
+          source_location_resolver.resolve(extractions) → # derive source_location
           accumulate per-document →
         emit completed AnnotatedDocuments (streaming)
     """
     
-    def __init__(self, language_model, prompt_template, format_handler): ...
+    def __init__(self, language_model, prompt_template, format_handler,
+                 evidence_extractor=None, source_location_resolver=None): ...
     
     def annotate_documents(
         self, documents: Iterable[Document], resolver,
@@ -1247,20 +1458,21 @@ class Annotator:
     ) -> Iterator[AnnotatedDocument]:
         """Annotate documents with streaming emission.
         
+        Each chunk flows through:
+        resolve → align → evidence → source_location → accumulate
+        
         If extraction_passes == 1:
           Single pass: streaming, emit documents as they complete.
         
         If extraction_passes > 1:
-          Sequential passes: reprocess each document multiple times,
-          merge non-overlapping extractions (first-pass wins for overlaps).
-          All passes complete before emission.
+          Sequential passes, merge non-overlapping (first-pass wins).
         """
     
     def annotate_text(self, text, resolver, ...) -> AnnotatedDocument:
         """Convenience: annotate single text string."""
 ```
 
-### Single-Pass Streaming Algorithm (from langextract)
+### Single-Pass Streaming Algorithm (from langextract, extended)
 
 ```
 1. Capture document order + text lazily as chunks are produced
@@ -1268,8 +1480,13 @@ class Annotator:
    a. Build prompts (ContextAwarePromptBuilder with optional cross-chunk context)
    b. model.infer(batch_prompts) → ScoredOutputs
    c. For each (chunk, output):
-      - resolver.resolve(output) → Extractions
-      - resolver.align(extractions, chunk_text, offsets) → aligned Extractions
+      - resolver.resolve(scored_output.output) → Extractions (values only)
+      - resolver.align(extractions, chunk_text, token_offset, char_offset)
+        → Extractions with char_interval + alignment_status set
+      - evidence_extractor.extract_evidence(extractions, document_text, tokenized_text)
+        → Extractions with evidence_text set (verbatim from source, 1-3 sentences)
+      - source_location_resolver.resolve(extractions, section_id, section_text, char_offset)
+        → Extractions with source_location set (e.g. "Methods 2.3", "Table 2")
       - Append to per_doc[chunk.document_id]
    d. Emit any documents that have no remaining chunks (streaming)
 3. Emit remaining documents
@@ -1519,12 +1736,13 @@ zhongnong-kg export --checkpoints data/intermediates/ --output output/
 ```
 zhongnong-kg/
 ├── schemas/                         # EXTERNAL CONFIG — domain model, not code
-│   ├── entities.yaml                # 13 entity types with attributes, types, constraints
-│   ├── relations.yaml               # 20+ relation types with source/target constraints
-│   └── extraction_phases.yaml       # 4 extraction phases (what entities per LLM call)
+│   ├── entities.yaml                # 13 entity types: descriptions, extraction_guidance,
+│   │                                #   examples, notes, vocabulary bindings, field source
+│   ├── relations.yaml               # 20+ relation types: source/target, cardinality, co_extracted
+│   └── extraction_phases.yaml       # 4 phases: entities per LLM call, gate rules, context feeds
 │
-├── prompts/                         # Prompt templates (one per extraction phase)
-│   ├── alternatives.txt
+├── prompts/                         # Prompt templates (alternate: auto-generated from entity metadata)
+│   ├── alternatives.txt             #   Or: SchemaRegistry.build_extraction_prompt() at runtime
 │   ├── experiment.txt
 │   ├── indicators.txt
 │   └── results.txt
@@ -1535,12 +1753,16 @@ zhongnong-kg/
 │   ├── tokenizer.py                 # Tokenizer ABC, RegexTokenizer, UnicodeTokenizer, TokenizedText, Token, TokenInterval
 │   ├── chunking.py                  # ChunkIterator, SentenceIterator, TextChunk, make_batches_of_textchunk
 │   ├── format_handler.py            # FormatHandler — JSON/YAML, fences, wrapper, parse_output
-│   ├── schema_registry.py           # SchemaRegistry — loads YAML config, validates, generates JSON Schema
+│   ├── schema_registry.py           # SchemaRegistry — loads YAML, Vocabulary, entity/relation defs,
+│   │                                #   llm_output_fields(), generate_json_schema(),
+│   │                                #   build_extraction_prompt(), post_process()
 │   ├── schema.py                    # BaseSchema ABC, FormatModeSchema
 │   ├── prompting.py                 # PromptTemplateStructured, QAPromptGenerator, PromptBuilder, ContextAwarePromptBuilder
-│   ├── resolver.py                  # AbstractResolver, Resolver, WordAligner — parse + align
-│   ├── annotation.py                # Annotator — chunk→prompt→infer→resolve→align→emit
-│   ├── extraction.py                # extract() — main entry, configures all layers, 4-phase pipeline
+│   ├── resolver.py                  # AbstractResolver, Resolver, WordAligner — parse + align (difflib + LCS fuzzy)
+│   ├── evidence.py                  # EvidenceExtractor — verbatim sentences from aligned char_interval
+│   ├── source_location.py           # SourceLocationResolver — section/table/figure from structure
+│   ├── annotation.py                # Annotator — chunk→prompt→infer→resolve→align→evidence→location→emit
+│   ├── extraction.py                # extract() — main entry: configures layers, 4-phase pipeline
 │   ├── factory.py                   # ModelConfig, create_model — provider resolution + env defaults
 │   │
 │   ├── providers/
@@ -1552,7 +1774,6 @@ zhongnong-kg/
 │   │       ├── __init__.py
 │   │       └── openai.py            # OpenAISchema — from_registry() → response_format json_schema
 │   │
-│   ├── glossary.py                  # GlossaryIndex — TSV loader, exact+fuzzy match
 │   ├── graph.py                     # build_graph, resolve_edges, export_neo4j_csv
 │   ├── cli.py                       # CLI entry point (click)
 │   └── config.py                    # Settings (pydantic-settings)
@@ -1562,6 +1783,8 @@ zhongnong-kg/
 │   ├── test_tokenizer.py
 │   ├── test_chunking.py
 │   ├── test_format_handler.py
+│   ├── test_evidence.py             # EvidenceExtractor: verbatim extraction, sentence boundaries
+│   ├── test_source_location.py      # SourceLocationResolver: section/table/figure detection
 │   ├── test_schema_registry.py
 │   ├── test_schema.py
 │   ├── test_prompting.py
@@ -1596,45 +1819,74 @@ zhongnong-kg/
 ## 15. Data Flow (End-to-End)
 
 ```
-ALTERNATIVE.tsv ──→ GlossaryIndex (loaded once)
-
+ALTERNATIVE.tsv ──→ Vocabulary.load() ──→ SchemaRegistry.vocabulary("Alternative")
+                                          │
+schemas/entities.yaml ──┐                 │
+schemas/relations.yaml   ─┤                │
+schemas/extraction_phases.yaml ─┘         │
+         │                                │
+         ▼                                │
+   SchemaRegistry (loaded once at startup)│
+         │                                │
+         │  entity_def() → extraction_guidance + examples + notes
+         │  generate_json_schema() → response_format (LLM fields only)
+         │  vocabulary() → formatted glossary text injected in prompt
+         │
+         ▼
 Article XML
   │
   ▼
 extract():
-  ├─ parse_article_sections(xml) → {abstract, methods, results, discussion} Documents
+  ├─ 1. parse_article_sections(xml) 
+  │     → {abstract, methods, results, discussion} as Documents
+  │       each with section_id for source_location derivation
   │
-  ├─ Phase 1: Alternatives (Gate)
-  │   ├─ PromptTemplateStructured(alt_description, alt_examples)
-  │   ├─ Annotator(model, template, format_handler).annotate_text(methods_text)
-  │   │   ├─ ChunkIterator(methods_text) → TextChunks
-  │   │   ├─ make_batches(chunks, batch_length)
-  │   │   ├─ For each batch:
-  │   │   │   ├─ ContextAwarePromptBuilder.build_prompt(chunk)
-  │   │   │   ├─ model.infer([prompt]) → ScoredOutput
-  │   │   │   ├─ resolver.resolve(scored_output.output) → Extractions
-  │   │   │   └─ resolver.align(extractions, chunk_text, offsets)
-  │   │   └─ Return AnnotatedDocument(extractions=[...])
-  │   ├─ Glossary lookup on each Alternative extraction
-  │   └─ GATE: has_known_alternative? → continue or skip
+  ├─ 2. Phase 1 — Alternatives (Gate)
+  │   ├─ PromptTemplate from entity metadata (Alternatives + Composites)
+  │   ├─ Vocabulary injected: formatted ALTERNATIVE.tsv glossary
+  │   ├─ Annotator.annotate_text(methods_text)
+  │   │   └─ chunk → prompt(build) → model.infer() 
+  │   │       → resolver.resolve() → Extractions (LLM values only)
+  │   │       → resolver.align() → char_interval set
+  │   │       → evidence_extractor.extract() → evidence_text verbatim
+  │   │       → source_location_resolver.resolve() → "Methods 2.3"
+  │   ├─ SchemaRegistry.post_process()
+  │   │   → Vocabulary.lookup("thymol") → alternative_class=Plant_Extract
+  │   │   → Vocabulary.fuzzy_match(...) → match_source=词表精确匹配
+  │   └─ GATE: has_known_alternative?
   │
-  ├─ Phase 2: Experiment Design
-  │   └─ Same Annotator pattern with design_template → Swine, Intervention, Control extractions
+  ├─ 3. Phase 2 — Experiment Design
+  │   └─ Same pipe: prompt(metadata) → infer → resolve → align 
+  │       → evidence → location → post_process
   │
-  ├─ Phase 3: Indicators
-  │   └─ Same Annotator pattern with indicator_template → Tissue, Indicator, Method extractions
+  ├─ 4. Phase 3 — Indicators + Tissue Sites + Methods
+  │   └─ Same pipe: prompt(metadata) → infer → resolve → align 
+  │       → evidence → location → post_process
   │
-  ├─ Phase 4: Results
-  │   └─ Same Annotator pattern with result_template + indicator_list context → Result extractions
+  ├─ 5. Phase 4 — Results
+  │   ├─ Context injected: indicator_list + control_group_list + tissue_list
+  │   └─ Same pipe: prompt(metadata+context) → infer → resolve → align 
+  │       → evidence → location → post_process
   │
-  └─ Return ArticleExtractionResult (combined AnnotatedDocuments)
+  └─ 6. Return ArticleExtractionResult
+        (all extractions with ALL fields populated)
 
 Graph Build:
   ├─ Collect all ArticleExtractionResults
-  ├─ Deduplicate entities → global IDs
-  ├─ Resolve inline relationships → edges
-  └─ Export nodes.tsv + edges.tsv
+  ├─ Deduplicate entities → global IDs (schema-driven ID scheme)
+  ├─ Resolve edges: references + inline_relations (schema-driven)
+  └─ Export nodes.csv + edges.csv (Neo4j format)
 ```
+
+### Field Population Timeline
+
+| Step | Fields Populated | Source |
+|------|-----------------|--------|
+| LLM infer + resolve | `standard_name`, `abbreviation`, `dose_value`, `direction`, `p_value`, `significance_level`, ... | `source: llm` |
+| resolver.align() | `char_interval`, `token_interval`, `alignment_status` | alignment engine |
+| evidence_extractor | `evidence_text` (verbatim 1-3 sentences from source) | `source: align` |
+| source_location_resolver | `source_location` ("Methods 2.3", "Table 2", etc.) | `source: structure` |
+| SchemaRegistry.post_process() | `alternative_class`, `subclass`, `match_source`, `dose_unit_standard` | `source: post` |
 
 ---
 
