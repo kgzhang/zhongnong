@@ -1,8 +1,6 @@
-.PHONY: help install sync test test-cov test-watch debug extract export clean clean-all
+.PHONY: help install sync test test-cov test-watch debug extract run-all clean clean-all
 
-VENV := .venv
-PYTEST := $(VENV)/bin/pytest
-CLI := $(VENV)/bin/python -m src.cli
+CLI := uv run python -m src.cli
 
 # ---------------------------------------------------------------------------
 # Default
@@ -12,25 +10,22 @@ help:
 	@echo ""
 	@echo "Setup:"
 	@echo "  make install       Install dependencies via uv sync"
-	@echo "  make sync          Alias for install"
 	@echo ""
-	@echo "Tests:"
-	@echo "  make test          Run all tests (203 tests)"
+	@echo "Tests (203 total):"
+	@echo "  make test          Run all tests"
 	@echo "  make test-cov      Run tests with coverage report"
 	@echo "  make test-watch    Run tests in fail-fast mode"
 	@echo ""
 	@echo "Extraction:"
-	@echo "  make debug XML=    Debug: extract from single article"
-	@echo "                     e.g. make debug XML=data/xml/PMC12183824.xml"
-	@echo "  make extract XML=  Extract and export graph for single article"
+	@echo "  make debug XML=data/xml/PMC12183824.xml"
+	@echo "                     Debug: extract from single article"
+	@echo "  make extract XML=data/xml/PMC12183824.xml"
+	@echo "                     Extract and export Neo4j CSV for one article"
 	@echo "  make run-all       Run pipeline on all articles in data/xml/"
 	@echo ""
-	@echo "Export:"
-	@echo "  make export DIR=   Export Neo4j CSV from checkpoints"
-	@echo ""
 	@echo "Cleanup:"
-	@echo "  make clean         Remove extracted data and cache"
-	@echo "  make clean-all     Remove data + cache + venv"
+	@echo "  make clean         Remove output + cache"
+	@echo "  make clean-all     Remove output + cache + .venv"
 	@echo ""
 
 # ---------------------------------------------------------------------------
@@ -46,16 +41,16 @@ sync: install
 # Tests
 # ---------------------------------------------------------------------------
 test:
-	$(PYTEST) tests/ -v
+	uv run pytest tests/ -v
 
 test-cov:
-	$(PYTEST) tests/ --cov=src --cov-report=term-missing -v
+	uv run pytest tests/ --cov=src --cov-report=term-missing -v
 
 test-watch:
-	$(PYTEST) tests/ -v --tb=short -x
+	uv run pytest tests/ -v --tb=short -x
 
 # ---------------------------------------------------------------------------
-# Extraction (v2 pipeline via CLI)
+# Extraction
 # ---------------------------------------------------------------------------
 debug:
 	@test -n "$(XML)" || { echo "Usage: make debug XML=data/xml/PMC12183824.xml"; exit 1; }
@@ -63,56 +58,17 @@ debug:
 
 extract:
 	@test -n "$(XML)" || { echo "Usage: make extract XML=data/xml/PMC12183824.xml"; exit 1; }
-	$(VENV)/bin/python -c "\
-from src.extraction import extract; \
-from src.graph import build_graph, export_neo4j_csv; \
-from src.schema_registry import SchemaRegistry; \
-from pathlib import Path; \
-result = extract('$(XML)', skip_if_no_known_alternative=False); \
-print(f'Entities: {len(result.extractions)}, Skipped: {result.skipped}'); \
-if result.skipped: print(f'Reason: {result.skip_reason}'); \
-registry = SchemaRegistry(); \
-graph = build_graph([result], registry); \
-print(f'Graph: {len(graph.nodes)} nodes, {len(graph.edges)} edges'); \
-out = Path('output'); out.mkdir(exist_ok=True); \
-export_neo4j_csv(graph, out); \
-print(f'Exported nodes.csv + edges.csv to output/')"
+	$(CLI) extract --xml $(XML) --no-skip-gate
 
 run-all:
-	@echo "Running pipeline on all articles in data/xml/..."
-	$(VENV)/bin/python -c "\
-from src.extraction import extract; \
-from src.graph import build_graph, export_neo4j_csv; \
-from src.schema_registry import SchemaRegistry; \
-from pathlib import Path; \
-registry = SchemaRegistry(); \
-all_results = []; \
-xml_dir = Path('data/xml'); \
-for f in sorted(xml_dir.glob('*.xml')): \
-    print(f'=== {f.name} ==='); \
-    result = extract(str(f), skip_if_no_known_alternative=False); \
-    all_results.append(result); \
-    print(f'  Entities: {len(result.extractions)} {"SKIPPED: "+result.skip_reason if result.skipped else ""}'); \
-graph = build_graph(all_results, registry); \
-print(f'\nTotal: {len(graph.nodes)} nodes, {len(graph.edges)} edges across {len(all_results)} articles'); \
-out = Path('output'); out.mkdir(exist_ok=True); \
-export_neo4j_csv(graph, out); \
-print(f'Exported to output/nodes.csv + output/edges.csv')"
-
-# ---------------------------------------------------------------------------
-# Export (from checkpoints)
-# ---------------------------------------------------------------------------
-export:
-	@test -n "$(DIR)" || { echo "Usage: make export DIR=data/intermediates"; exit 1; }
-	$(CLI) export --checkpoints $(DIR) --output output
+	$(CLI) run --dir data/xml --no-skip-gate
 
 # ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
 clean:
-	@echo "Removing extracted data and cache..."
+	@echo "Removing output and cache..."
 	rm -rf output/
-	rm -rf data/intermediates/
 	rm -rf .pytest_cache
 	rm -rf .coverage
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
@@ -120,6 +76,5 @@ clean:
 
 clean-all: clean
 	@echo "Removing virtual environment..."
-	rm -rf $(VENV)
-	rm -rf .worktrees
+	rm -rf .venv
 	@echo "Full cleanup complete."
