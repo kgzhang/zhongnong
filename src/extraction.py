@@ -34,7 +34,7 @@ def extract(
     api_key: str | None = None,
     registry=None,
     max_char_buffer: int | None = None,
-    skip_if_no_known_alternative: bool | None = None,
+    gate_enabled: bool | None = None,
     **kwargs,
 ) -> ArticleExtractionResult:
     """Extract entities from one PMC XML article using 4-phase pipeline.
@@ -47,8 +47,8 @@ def extract(
         model_id = settings.llm_model
     if max_char_buffer is None:
         max_char_buffer = settings.max_char_buffer
-    if skip_if_no_known_alternative is None:
-        skip_if_no_known_alternative = settings.skip_if_no_known_alternative
+    if gate_enabled is None:
+        gate_enabled = settings.gate_enabled
 
     # 1. Load registry if not provided
     if registry is None:
@@ -72,10 +72,8 @@ def extract(
     pmid = sections.get("pmid", "")
     result = ArticleExtractionResult(doi=doi, pmid=pmid)
 
-    if not any(sections.get(k) for k in ("abstract", "methods", "results", "discussion", "body")):
-        result.skipped = True
-        result.skip_reason = "No extractable sections found"
-        return result
+    # Sections are resolved per-phase via extraction_phases.yaml.
+    # If a phase's required sections are empty, only that phase is skipped.
 
     # 4-7: 4-phase extraction
     from src.format_handler import FormatHandler
@@ -86,32 +84,26 @@ def extract(
     all_extractions: list[Extraction] = []
     phase_results: dict[str, list[Extraction]] = {}
 
-    # Determine section names for source_location tracking
-    section_name_map = {
-        0: "Materials and Methods",
-        1: "Materials and Methods",
-        2: "Materials and Methods",
-        3: "Results and Discussion",
-    }
-
     for phase_idx, phase in enumerate(registry.phase_defs()):
-        # Build prompt from entity metadata
         prompt_text = registry.build_extraction_prompt(phase.extracts)
 
-        # Determine which section text to use
-        if phase_idx == 0:
-            section_text = sections.get("methods") or sections.get("body") or sections.get("abstract") or ""
-        elif phase_idx <= 2:
-            section_text = sections.get("methods") or sections.get("body") or ""
-        else:
-            section_text = sections.get("results") or sections.get("discussion") or sections.get("body") or ""
+        # Resolve section text from phase config (fallback to "body")
+        preferred = getattr(phase, "sections", None) or ["body"]
+        section_text = ""
+        for sec_name in preferred:
+            section_text = sections.get(sec_name, "")
+            if section_text.strip():
+                break
 
         if not section_text.strip():
-            logger.warning("Phase %d (%s): no source text available, skipping", phase_idx + 1, phase.name)
-            result.warnings.append(f"Phase {phase_idx+1} ({phase.name}): no source text available")
+            logger.warning("Phase %d (%s): no text for sections %s",
+                           phase_idx + 1, phase.name, preferred)
+            result.warnings.append(
+                f"Phase {phase_idx+1} ({phase.name}): no source text available"
+            )
             continue
 
-        section_label = section_name_map.get(phase_idx, "Full Text")
+        section_label = preferred[0].replace("_", " ").title()
         source_doc = Document(text=section_text, document_id=f"{pmid}_{section_label.replace(' ', '_')}")
 
         # Progress
@@ -163,29 +155,19 @@ def extract(
         print(f"    → {len(phase_exts)} entities in {phase_elapsed:.1f}s: {type_summary}", flush=True)
 
         # Gate check after Phase 1
-        if phase_idx == 0 and skip_if_no_known_alternative and phase.gate:
-            known_classes = {
-                "Plant_Extract", "Trace_Element", "Organic_Acid", "Probiotic",
-                "Polysaccharides_and_Oligosaccharides", "Enzyme", "Bioactive_Peptides",
-            }
-            alt_exts = [e for e in phase_exts if e.extraction_class == "Alternative"]
-            has_known = any(
-                (e.attributes or {}).get("alternative_class") in known_classes
-                for e in alt_exts
+        # Gate check — driven entirely by extraction_phases.yaml
+        if phase_idx == 0 and gate_enabled and phase.gate:
+            passed = registry.evaluate_gate(
+                phase_exts, phase.gate.entity, phase.gate.condition,
             )
-            if not has_known:
+            if not passed:
                 result.skipped = True
-                result.skip_reason = "No known Alternative found (gate check)"
+                result.skip_reason = (
+                    f"Gate check failed: {phase.gate.entity} {phase.gate.condition}"
+                )
                 result.extractions = all_extractions
-                # Save intermediate checkpoint for manual inspection
-                _save_checkpoint(
-                    result, all_extractions, pmid, phase_exts,
-                )
-                logger.info(
-                    "Gate check failed — %d alternatives found, none in known classes. "
-                    "Checkpoint saved to data/intermediates/",
-                    len(alt_exts),
-                )
+                _save_checkpoint(result, all_extractions, pmid, phase_exts)
+                logger.info("Gate check failed — checkpoint saved")
                 return result
 
     # Post-process all extractions
@@ -315,6 +297,7 @@ def _parse_article_sections(xml_path: Path) -> dict[str, str]:
             title_text = " ".join(title_el.itertext()).strip().lower() if title_el is not None else ""
             body_text = _element_text(sec, nsmap)
 
+            # FIXME pmc 的所有情况不一定能够完整覆盖，需要考虑更大的兼容性，该代码适合放到单独文件中
             if "abstract" in title_text or "abstract" == _get_section_type(sec):
                 result["abstract"] = body_text
             elif "method" in title_text or "materials and methods" in title_text or "materials" in title_text:

@@ -25,7 +25,7 @@ def extract(xml, output_dir, skip_gate):
 
     registry = SchemaRegistry()
     result = extract_article(
-        xml, skip_if_no_known_alternative=not skip_gate,
+        xml, gate_enabled=not skip_gate,
     )
     click.echo(f"Entities: {len(result.extractions)}")
     if result.skipped:
@@ -97,7 +97,7 @@ def run(xml_dir, output_dir, skip_gate):
 
     for f in xml_files:
         click.echo(f"=== {f.name} ===")
-        result = extract(str(f), skip_if_no_known_alternative=not skip_gate)
+        result = extract(str(f), gate_enabled=not skip_gate)
         all_results.append(result)
         total_entities += len(result.extractions)
         click.echo(f"  Entities: {len(result.extractions)}"

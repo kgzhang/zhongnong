@@ -44,11 +44,10 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     output_dir: Path = Path("output")
     checkpoint_dir: Path = Path("data/intermediates")
-    alternative_tsv: Path = Path("ALTERNATIVE.tsv")
     schema_dir: Path = Path("schemas")
 
-    # Gate
-    skip_if_no_known_alternative: bool = True
+    # Gate: if True, articles fail gate check → skip (driven by extraction_phases.yaml)
+    gate_enabled: bool = True
 
     # Debug
     debug: bool = False

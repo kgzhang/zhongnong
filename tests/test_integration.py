@@ -8,7 +8,7 @@ SCHEMA_DIR = Path(__file__).parent.parent / "schemas"
 
 class TestSchemaRegistryLoads:
     def test_all_entities_load(self):
-        """Verify schema registry loads all 13 entity types from YAML config."""
+        """Verify schema registry loads all 12 entity types from YAML config."""
         from src.schema_registry import SchemaRegistry
         registry = SchemaRegistry(config_dir=SCHEMA_DIR)
         names = registry.all_entity_names()
@@ -17,7 +17,7 @@ class TestSchemaRegistryLoads:
         assert "Result" in names
         assert "Indicator" in names
         assert "Intervention" in names
-        assert len(names) >= 13
+        assert len(names) >= 12
 
     def test_all_phases_load(self):
         """Verify all 4 extraction phases are defined."""
@@ -46,7 +46,7 @@ class TestGraphExportRoundtrip:
 
         node = GraphNode(
             id="alt_001", labels=["Alternative", "Entity"],
-            properties={"name": "thymol", "alternative_class": "Plant_Extract"},
+            properties={"name": "thymol", "classification": "Plant_Extract"},
             source_pmids=["12345"],
         )
         edge = GraphEdge(
@@ -104,7 +104,7 @@ class TestDataFlow:
         ext = Extraction(
             extraction_class="Alternative",
             extraction_text="thymol",
-            attributes={"standard_name": "thymol", "alternative_class": "Plant_Extract"},
+            attributes={"standard_name": "thymol", "classification": "Plant_Extract"},
         )
         gid = entity_global_id("Alternative", "thymol")
         node = GraphNode(
@@ -258,7 +258,7 @@ class TestEndToEndPipeline:
         # Post-process should set alternative_class
         alt_exts = [e for e in all_extractions if e.extraction_class == "Alternative"]
         for alt in alt_exts:
-            assert "alternative_class" in (alt.attributes or {})
+            assert "classification" in (alt.attributes or {})
 
         # Build graph
         article_result = ArticleExtractionResult(
@@ -305,7 +305,7 @@ class TestEndToEndPipeline:
             "extractions": [
                 {"Alternative": "unknown_substance", "Alternative_attributes": {
                     "standard_name": "unknown_substance",
-                    "alternative_class": "Other",
+                    "classification": "Other",
                     "original_text": "unknown_substance",
                 }},
             ]
@@ -338,7 +338,7 @@ class TestEndToEndPipeline:
         # Verify gate logic: alternative_class is "Other"
         alt_exts = [e for e in (result.extractions or []) if e.extraction_class == "Alternative"]
         for alt in alt_exts:
-            alt_class = (alt.attributes or {}).get("alternative_class", "")
+            alt_class = (alt.attributes or {}).get("classification", "")
             # Should be "Other" (no known class matched)
             assert alt_class == "Other" or alt_class == ""
 

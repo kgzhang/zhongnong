@@ -1,18 +1,25 @@
 phases:
-  phase_1_alternatives:
-    description: "Extract antibiotic alternatives (GATE)"
+  phase_1_gate:
+    description: "Identify core entities for gate check (scan methods/body first)"
+    sections: [methods, body, abstract]
     extracts: [Alternative, Composite_Product]
     gate:
       entity: Alternative
-      condition: "alternative_class not in ['Other']"
+      condition: "classification not in ['Other', '', 'unmatched']"
       on_fail: skip_article
-  phase_2_experiment:
-    description: "Extract experiment design parameters"
+
+  phase_2_design:
+    description: "Extract experiment design, interventions, and animal parameters"
+    sections: [methods, body]
     extracts: [Literature, Experiment, Swine_Model, Swine, Intervention, Control_Group]
+
   phase_3_indicators:
-    description: "Extract indicators, tissue sites, methods"
+    description: "Extract measured indicators, tissue sites, and assay methods"
+    sections: [methods, body]
     extracts: [Tissue_Site, Indicator, Method]
+
   phase_4_results:
-    description: "Extract statistically evaluated results"
+    description: "Extract all statistically evaluated results with effect directions"
+    sections: [results, discussion, body]
     extracts: [Result]
-    context_from: [phase_2_experiment, phase_3_indicators]
+    context_from: [phase_2_design, phase_3_indicators]

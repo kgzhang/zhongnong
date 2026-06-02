@@ -1,16 +1,31 @@
 entities:
   Alternative:
-    display_name: "抗生素替代物物质"
-    description: "抗生素替代物物质（标准分类中的具体有效成分）。Alternative 与 Composite_Product 分开。"
+    display_name: "Antibiotic Alternative Substance"
     primary_text: standard_name
+    description: >
+      Active compound or microorganism tested as a replacement for
+      in-feed antibiotics in swine production.  Includes plant extracts,
+      probiotics, organic acids, enzymes, trace elements, oligosaccharides,
+      and bioactive peptides.
     extraction_guidance: |
-      ## 提取要求
-      1. 扫描材料与方法部分，识别所有用作抗生素替代物的物质
-      2. 优先与下方《Alternative分类》词表匹配
-      3. 词表中存在 → 使用词表标准名称和分类
-      4. 词表中不存在 → 标记为 Other，保留原文原始名称
-      5. 严禁将多个实体拼接成长字符串
-    notes: "不要拼接字符串创造不存在的复合实体。原封不动保留原文中的原始英文全称及缩写。"
+      ## Extraction Rules
+      1. Scan the Materials & Methods section for ALL substances administered
+         with the intent to replace or reduce antibiotic use in pigs.
+      2. Look for: feed additives, dietary supplements, commercial products,
+         natural compounds, fermentation products, probiotics, prebiotics,
+         enzymes, organic acids, plant extracts.
+      3. Match each substance against the candidate vocabulary provided.
+         - Vocabulary match → record the standard name and classification.
+         - No vocabulary match → mark classification as "Other" but preserve
+           the original name exactly as written in the paper.
+      4. NEVER concatenate multiple substance names with "+" or other
+         delimiters.  Each active ingredient is a separate entity.
+      5. For commercial blends (multi-component products), extract each
+         component as a separate Alternative entity AND create a
+         Composite_Product entity to represent the blend.
+    notes: >
+      Preserve the original English name and abbreviation verbatim from the
+      source text.  Do not invent names or merge entities.
     vocabulary:
       source: ALTERNATIVE.tsv
       key_field: "Alternative (具体物质)"
@@ -18,8 +33,7 @@ entities:
       subclass_field: "Subclass (二级分类)"
       match_fields: ["Alternative (具体物质)"]
       match_mode: fuzzy
-      inject_in_prompt: true
-      # TSV cells contain comma-separated lists like "thymol (THY), carvacrol (CAR)"
+      inject_in_prompt: false
       value_delimiter: ","
     attributes:
       - {name: standard_name, type: string, required: true, source: llm}
@@ -28,34 +42,34 @@ entities:
       - {name: source_organism, type: string, required: false, source: llm}
       - {name: is_synthetic, type: boolean, required: false, source: llm}
       - {name: original_text, type: string, required: true, source: llm}
-      - {name: alternative_class, type: enum, required: true, source: post,
-         values: [Plant_Extract, Trace_Element, Organic_Acid, Probiotic, Polysaccharides_and_Oligosaccharides, Enzyme, Bioactive_Peptides, Other]}
+      - {name: classification, type: enum, required: true, source: post,
+         values: [Plant_Extract, Trace_Element, Organic_Acid, Probiotic,
+                  Polysaccharides_and_Oligosaccharides, Enzyme, Bioactive_Peptides, Other]}
       - {name: subclass, type: string, required: false, source: post}
       - {name: match_source, type: enum, required: true, source: post,
-         values: [词表精确匹配, 词表同义映射, 词表模糊匹配, Other_未匹配]}
-      - {name: evidence_text, type: text, required: true, source: align}
-      - {name: source_location, type: string, required: true, source: structure}
-
-  Alternative_Class:
-    display_name: "物质分类"
-    description: "物质的分类（七大类 + Other）作为分类节点"
-    primary_text: class_name
-    attributes:
-      - {name: class_name, type: string, required: true, source: llm}
-      - {name: level, type: integer, required: false, source: llm}
-      - {name: description, type: text, required: false, source: llm}
+         values: [exact, fuzzy, unmatched]}
       - {name: evidence_text, type: text, required: true, source: align}
       - {name: source_location, type: string, required: true, source: structure}
 
   Composite_Product:
-    display_name: "复合制剂产品"
-    description: "复合制剂产品作为独立实体，通过 has_component 关联各组分"
+    display_name: "Composite Product / Commercial Blend"
     primary_text: product_name
+    description: >
+      A multi-component product (commercial or experimental blend) that
+      contains two or more active substances.  Linked to its components
+      via has_component relationships.
     extraction_guidance: |
-      ## 复合制剂三步处理法
-      第一步 — 拆分组分；第二步 — 创建复合节点；第三步 — 建立has_component关系
-      严禁字符串拼接命名
-    notes: "禁止生成'植物乳杆菌+枯草芽孢杆菌'这样的长字符串节点名"
+      ## Three-Step Rule for Composite Products
+      (1) Decompose: split the product into individual active components.
+      (2) Create a node: the product itself gets its own entity using the
+          trade name or a descriptive identifier from the paper.
+      (3) Link: add a "components" list with each {standard_name, entity_type}
+          entry to connect the product to its components.
+      NEVER concatenate component names to form the product name.
+    notes: >
+      If the paper uses a trade name (e.g. "Product X", "Biomin P.E.P."),
+      use that as the product_name.  Otherwise use a descriptive identifier
+      like "probiotic-enzyme blend".
     attributes:
       - {name: product_name, type: string, required: true, source: llm}
       - {name: manufacturer, type: string, required: false, source: llm}
@@ -64,12 +78,13 @@ entities:
       - {name: evidence_text, type: text, required: true, source: align}
       - {name: source_location, type: string, required: true, source: structure}
     inline_relations:
-      - {name: has_component, target: [Alternative, Composite_Product], via_field: components, multiple: true}
+      - {name: has_component, target: [Alternative, Composite_Product],
+         via_field: components, multiple: true}
 
   Literature:
-    display_name: "文献"
-    description: "文献（以DOI或PMID为唯一标识）"
+    display_name: "Literature Reference"
     primary_text: title
+    description: "Published article identified by DOI or PMID."
     attributes:
       - {name: doi, type: string, required: true, source: llm}
       - {name: pmid, type: string, required: true, source: llm}
@@ -84,9 +99,9 @@ entities:
       - {name: source_location, type: string, required: true, source: structure}
 
   Experiment:
-    display_name: "试验"
-    description: "文献下的独立实验单元"
+    display_name: "Experiment / Trial"
     primary_text: experiment_id
+    description: "A self-contained experimental unit within a publication."
     attributes:
       - {name: experiment_id, type: string, required: true, source: llm}
       - {name: description, type: text, required: false, source: llm}
@@ -94,11 +109,13 @@ entities:
       - {name: source_location, type: string, required: true, source: structure}
 
   Swine_Model:
-    display_name: "动物模型"
-    description: "试验动物模型（攻毒模型或常规模型）"
+    display_name: "Animal Model"
     primary_text: stressor_name
+    description: >
+      Challenge model or normal-health model used in the experiment.
     attributes:
-      - {name: model_type, type: enum, required: true, source: llm, values: [challenge, normal]}
+      - {name: model_type, type: enum, required: true, source: llm,
+         values: [challenge, normal]}
       - {name: stressor_name, type: string, required: false, source: llm}
       - {name: challenge_method, type: string, required: false, source: llm}
       - {name: challenge_dose, type: string, required: false, source: llm}
@@ -107,9 +124,9 @@ entities:
       - {name: source_location, type: string, required: true, source: structure}
 
   Swine:
-    display_name: "动物参数"
-    description: "试验动物参数（品种、性别、日龄、体重等）"
+    display_name: "Animal Parameters"
     primary_text: breed
+    description: "Breed, sex, age, and weight characteristics of experimental animals."
     attributes:
       - {name: breed, type: string, required: true, source: llm}
       - {name: sex, type: enum, required: false, source: llm,
@@ -122,9 +139,16 @@ entities:
       - {name: source_location, type: string, required: true, source: structure}
 
   Intervention:
-    display_name: "干预措施"
-    description: "干预措施（给药方案）"
+    display_name: "Intervention / Treatment"
     primary_text: intervention_target
+    description: >
+      A specific treatment regimen applied to an experimental group:
+      substance, dose, administration route, and duration.
+    extraction_guidance: |
+      ## Dose Unit Normalisation
+      Convert all doses to standard units: 1 ppm = 1 mg/kg (feed),
+      1 % = 10,000 mg/kg (feed).  Preserve the original unit text in
+      dose_unit_original.
     attributes:
       - {name: intervention_target, type: string, required: true, source: llm}
       - {name: dose_value, type: float, required: false, source: llm}
@@ -139,9 +163,9 @@ entities:
       - {name: source_location, type: string, required: true, source: structure}
 
   Control_Group:
-    display_name: "对照组"
-    description: "作为结果对比基准的实体"
+    display_name: "Control Group"
     primary_text: group_name
+    description: "Reference group against which treatment effects are compared."
     attributes:
       - {name: group_name, type: string, required: true, source: llm}
       - {name: group_type, type: enum, required: true, source: llm,
@@ -151,9 +175,9 @@ entities:
       - {name: source_location, type: string, required: true, source: structure}
 
   Tissue_Site:
-    display_name: "组织部位"
-    description: "取样组织/部位"
+    display_name: "Tissue / Sampling Site"
     primary_text: site_name
+    description: "Anatomical site where a sample was collected or a measurement taken."
     attributes:
       - {name: site_name, type: string, required: true, source: llm}
       - {name: site_category, type: enum, required: false, source: llm,
@@ -162,9 +186,11 @@ entities:
       - {name: source_location, type: string, required: true, source: structure}
 
   Indicator:
-    display_name: "测定指标"
-    description: "测定指标（标准化名称+缩写）"
+    display_name: "Measured Indicator"
     primary_text: abbreviation
+    description: >
+      A quantitative endpoint measured in the study (growth performance,
+      microbiome diversity, metabolite concentration, gene expression, etc.).
     attributes:
       - {name: standard_name, type: string, required: true, source: llm}
       - {name: abbreviation, type: string, required: true, source: llm}
@@ -176,12 +202,13 @@ entities:
       - {name: evidence_text, type: text, required: true, source: align}
       - {name: source_location, type: string, required: true, source: structure}
     references:
-      - {name: measured_in, target_entity: Tissue_Site, target_field: site_name, edge_type: measured_in}
+      - {name: measured_in, target_entity: Tissue_Site, target_field: site_name,
+         edge_type: measured_in}
 
   Method:
-    display_name: "测定方法"
-    description: "测定方法"
+    display_name: "Assay / Measurement Method"
     primary_text: method_name
+    description: "Laboratory or analytical method used to measure an indicator."
     attributes:
       - {name: method_name, type: string, required: true, source: llm}
       - {name: description, type: text, required: false, source: llm}
@@ -189,23 +216,36 @@ entities:
       - {name: source_location, type: string, required: true, source: structure}
 
   Result:
-    display_name: "显著性结果"
-    description: "三元组：部位+指标+变化方向。全量抽取所有报告了统计学比较结果的指标变化。"
+    display_name: "Statistical Result"
     primary_text: indicator_abbreviation
+    description: >
+      A statistically evaluated comparison between a treatment group and
+      a control group.  Triple: tissue site + indicator + direction of change.
     extraction_guidance: |
-      ## 提取规则
-      1. 全量抽取所有报告了统计学比较结果的指标变化
-      2. 如实记录原文统计信息，无论P值大小
-      3. 对比基准必须是试验组与对照组的横向比较
-      4. 关系类型：数值型→increases/decreases, 基因→upregulates/downregulates, 微生物→enriches/depletes
-    notes: "若同一句话描述多个指标变化，拆分为多行独立记录"
+      ## Extraction Rules
+      1. Extract EVERY result that reports a statistical comparison,
+         regardless of P-value magnitude.
+      2. Comparison baseline MUST be treatment vs. control (not absolute).
+      3. For challenge models, the baseline is the challenged control group,
+         not the unchallenged negative control.
+      4. Choose the correct relation type:
+         - Numerical indicators (ADG, VH, SCFA) → increases / decreases
+         - Gene/protein expression → upregulates / downregulates
+         - Microbial abundance → enriches / depletes
+         - Unclear mechanism → affects
+      5. If a single sentence describes multiple indicator changes, split
+         into separate Result entities (one per indicator).
+    notes: >
+      significance_level mapping: P<0.01 → p_less_0.01, P<0.05 → p_less_0.05,
+      0.05≤P<0.10 → trend_0.05_0.1, P≥0.10 → not_significant
     attributes:
       - {name: indicator_abbreviation, type: string, required: true, source: llm}
       - {name: tissue_site, type: string, required: false, source: llm}
       - {name: direction, type: enum, required: true, source: llm,
          values: [increased, decreased, no_significant_change]}
       - {name: relation_type, type: enum, required: true, source: llm,
-         values: [increases, decreases, upregulates, downregulates, enriches, depletes, affects]}
+         values: [increases, decreases, upregulates, downregulates,
+                  enriches, depletes, affects]}
       - {name: p_value, type: float, required: false, source: llm}
       - {name: p_value_original_text, type: string, required: false, source: llm}
       - {name: corrected_significance, type: string, required: false, source: llm}
@@ -218,6 +258,9 @@ entities:
       - {name: evidence_text, type: text, required: true, source: align}
       - {name: source_location, type: string, required: true, source: structure}
     references:
-      - {name: indicator_abbreviation, target_entity: Indicator, target_field: abbreviation, edge_type: corresponds_to}
-      - {name: tissue_site, target_entity: Tissue_Site, target_field: site_name, edge_type: occurs_in}
-      - {name: compared_to_group, target_entity: Control_Group, target_field: group_name, edge_type: compared_to}
+      - {name: indicator_abbreviation, target_entity: Indicator,
+         target_field: abbreviation, edge_type: corresponds_to}
+      - {name: tissue_site, target_entity: Tissue_Site,
+         target_field: site_name, edge_type: occurs_in}
+      - {name: compared_to_group, target_entity: Control_Group,
+         target_field: group_name, edge_type: compared_to}

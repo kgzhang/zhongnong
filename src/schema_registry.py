@@ -91,6 +91,7 @@ class ExtractionPhase:
     name: str
     description: str
     extracts: list[str]
+    sections: list[str] = field(default_factory=list)
     context_from: list[str] = field(default_factory=list)
     gate: GateDef | None = None
 
@@ -196,21 +197,56 @@ class Vocabulary:
                 best = entry
         return best
 
-    def format_for_prompt(self) -> str:
-        """Render vocabulary as prompt text."""
+    def format_for_prompt(self, summary_only: bool = True) -> str:
+        """Render vocabulary for prompt injection.
+
+        When ``summary_only=True`` (default), produces a compact category
+        summary instead of the full list — suitable for large vocabularies.
+        """
         if not self.entries:
             return ""
-        lines = ["## Alternative分类（词表）"]
+
+        if summary_only:
+            return self._format_summary()
+
+        lines = ["## Candidate Vocabulary"]
         for entry in self.entries:
             name = entry.get(self.binding.key_field, "")
             cls = entry.get(self.binding.class_field or "", "")
             subclass = entry.get(self.binding.subclass_field or "", "")
-            parts = [name]
+            parts = [f"  {name}"]
             if cls:
                 parts.append(f"  [{cls}]")
             if subclass:
                 parts.append(f"  ({subclass})")
             lines.append("".join(parts))
+        return "\n".join(lines)
+
+    def _format_summary(self) -> str:
+        """Build a compact category overview for prompt injection.
+
+        Lists classes and subclasses with example names, avoiding a dump
+        of every individual entry.
+        """
+        classes: dict[str, dict[str, list[str]]] = {}
+        for entry in self.entries:
+            cls = entry.get(self.binding.class_field or "", "Uncategorised")
+            sub = entry.get(self.binding.subclass_field or "", "general")
+            name = entry.get(self.binding.key_field, "")
+            # Extract first 2-3 example names from comma-separated lists
+            if self.binding.value_delimiter and self.binding.value_delimiter in name:
+                names = [n.strip().split("(")[0].strip()
+                         for n in name.split(self.binding.value_delimiter)[:3]]
+            else:
+                names = [name.strip()]
+            classes.setdefault(cls, {}).setdefault(sub, []).extend(names)
+
+        lines = ["## Candidate Vocabulary (categories only — full list used for post-matching)"]
+        for cls_name, subclasses in sorted(classes.items()):
+            lines.append(f"\n### {cls_name}")
+            for sub_name, examples in sorted(subclasses.items()):
+                unique = list(dict.fromkeys(examples))[:3]  # deduplicate, max 3
+                lines.append(f"  [{sub_name}] e.g. {', '.join(unique)}")
         return "\n".join(lines)
 
 # ---------------------------------------------------------------------------
@@ -337,6 +373,7 @@ class SchemaRegistry:
                 name=name,
                 description=raw.get("description", ""),
                 extracts=raw.get("extracts", []),
+                sections=raw.get("sections", []),
                 context_from=raw.get("context_from", []),
                 gate=gate,
             )
@@ -472,54 +509,121 @@ class SchemaRegistry:
                 parts.append(f"\n{ed.extraction_guidance}")
             if ed.notes:
                 parts.append(f"\n注意: {ed.notes}")
-            # Inject vocabulary if available
+            # Inject vocabulary summary (categories + examples, not full list)
             vocab = self.vocabulary(ename)
             if vocab and vocab.entries and (ed.vocabulary and ed.vocabulary.inject_in_prompt):
-                parts.append(f"\n{vocab.format_for_prompt()}")
+                parts.append(f"\n{vocab.format_for_prompt(summary_only=True)}")
         return "\n\n".join(parts).strip()
 
     def post_process(self, extraction: Extraction) -> Extraction:
-        """Apply vocabulary matching to populate source=post fields.
+        """Apply post-processing pipeline for source=post fields.
 
-        Currently handles: Alternative entities (alternative_class, subclass, match_source).
+        Reads the entity definition to find ``source: post`` attributes,
+        then applies the configured pipeline (vocabulary matching,
+        unit normalisation, etc.).  Fully generic — no entity-specific
+        logic lives here.
         """
         attrs = dict(extraction.attributes) if extraction.attributes else {}
 
-        if extraction.extraction_class == "Alternative":
-            self._post_process_alternative(attrs)
+        try:
+            ed = self.entity_def(extraction.extraction_class)
+        except KeyError:
+            extraction.attributes = attrs
+            return extraction
+
+        post_fields = [a for a in ed.attributes if a.source == "post"]
+        if not post_fields:
+            extraction.attributes = attrs
+            return extraction
+
+        # If entity has a vocabulary binding, run vocabulary matching
+        vocab = self.vocabulary(extraction.extraction_class)
+        if vocab and vocab.entries:
+            primary_field = ed.primary_text
+            lookup_value = attrs.get(primary_field, extraction.extraction_text)
+            self._apply_vocabulary(attrs, vocab, lookup_value, ed)
 
         extraction.attributes = attrs
         return extraction
 
-    def _post_process_alternative(self, attrs: dict[str, Any]) -> None:
-        """Populate alternative_class, subclass, match_source from vocabulary."""
-        standard_name = attrs.get("standard_name", "")
-        vocab = self.vocabulary("Alternative")
-        if not vocab or not vocab.entries:
-            # No vocabulary loaded — set defaults
-            attrs.setdefault("alternative_class", "Other")
-            attrs.setdefault("match_source", "Other_未匹配")
+    def _apply_vocabulary(
+        self,
+        attrs: dict[str, Any],
+        vocab: Vocabulary,
+        lookup_value: str,
+        ed: EntityDef,
+    ) -> None:
+        """Generic vocabulary matching — populates classification fields.
+
+        Uses the vocabulary binding's field mappings for the matched row,
+        avoiding hardcoded Alternative-specific column names.
+        """
+        binding = ed.vocabulary
+        if not binding:
             return
 
-        # Try exact match first
-        match = vocab.lookup(standard_name)
+        # Try exact then fuzzy
+        match = vocab.lookup(lookup_value) or vocab.fuzzy_match(lookup_value)
+
+        # Map matched row fields → entity attribute names using column mapping from entities.yaml
+        class_attr = "class_field"  # attribute name on the entity that stores the class
+        # Determine which entity attribute gets the class value
+        # Look for a post field that's an enum (typically the classification field)
+        for a in ed.attributes:
+            if a.source == "post" and a.type == "enum":
+                class_attr = a.name
+                break
+
         if match:
-            attrs["alternative_class"] = match.get("Alternative_Class", "Other")
-            attrs["subclass"] = match.get("Subclass", "")
-            attrs["match_source"] = "词表精确匹配"
-            return
+            # Use the binding's field names to extract values from the matched TSV row
+            row_class = match.get(binding.class_field or "", "")
+            row_subclass = match.get(binding.subclass_field or "", "")
+            attrs[class_attr] = row_class or "Other"
+            if row_subclass:
+                for a in ed.attributes:
+                    if a.source == "post" and a.type == "string" and a.name != class_attr:
+                        attrs[a.name] = row_subclass
+                        break
 
-        # Try fuzzy match
-        match = vocab.fuzzy_match(standard_name)
-        if match:
-            attrs["alternative_class"] = match.get("Alternative_Class", "Other")
-            attrs["subclass"] = match.get("Subclass", "")
-            attrs["match_source"] = "词表模糊匹配"
-            return
+            # match_source: distinguish exact vs fuzzy
+            is_exact = vocab.lookup(lookup_value) is not None
+            attrs.setdefault("match_source", "exact" if is_exact else "fuzzy")
+        else:
+            attrs.setdefault(class_attr, "Other")
+            attrs.setdefault("match_source", "unmatched")
 
-        # No match
-        attrs["alternative_class"] = "Other"
-        attrs["match_source"] = "Other_未匹配"
+    def evaluate_gate(
+        self,
+        extractions: list[Extraction],
+        gate_entity: str,
+        gate_condition: str,
+    ) -> bool:
+        """Evaluate a gate condition against extractions.  Generic — no hardcoded
+        entity or field names.
+
+        Returns True if the gate passes (article should continue).
+        """
+        if not gate_entity or not gate_condition:
+            return True  # no gate → pass
+
+        # Parse condition like "class_field not in ['Other', '']"
+        # For now: check if ANY extraction of gate_entity has a post field
+        # whose value is not empty and not "Other"
+        for ext in extractions:
+            if ext.extraction_class != gate_entity:
+                continue
+            attrs = ext.attributes or {}
+            # Check all post-process fields for non-Other values
+            try:
+                ed = self.entity_def(gate_entity)
+                for a in ed.attributes:
+                    if a.source == "post" and a.type == "enum":
+                        val = attrs.get(a.name, "")
+                        if val and val not in ("Other", "", "unmatched"):
+                            return True
+            except KeyError:
+                pass
+        return False
 
     def validate_extraction(self, extraction: Extraction) -> list[str]:
         """Validate required fields. Returns list of error messages."""

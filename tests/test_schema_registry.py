@@ -16,7 +16,7 @@ class TestSchemaRegistry:
         assert "Alternative" in names
         assert "Composite_Product" in names
         assert "Result" in names
-        assert len(names) >= 13
+        assert len(names) >= 12
 
     def test_entity_def(self):
         ed = self.registry.entity_def("Alternative")
@@ -53,7 +53,7 @@ class TestSchemaRegistry:
         ext = Extraction(extraction_class="Alternative", extraction_text="thymol",
                         attributes={"standard_name": "thymol"})
         result = self.registry.post_process(ext)
-        assert "alternative_class" in (result.attributes or {})
+        assert "classification" in (result.attributes or {})
         assert "match_source" in (result.attributes or {})
 
     def test_validate_extraction(self):
