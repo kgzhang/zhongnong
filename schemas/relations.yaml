@@ -6,18 +6,14 @@ relations:
     cardinality: many_to_one
   has_component:
     description: "复合产品包含某个组分"
-    source: Composite_Product
-    target: [Alternative, Composite_Product]
+    source: Alternative
+    target: [Alternative]
     cardinality: one_to_many
     co_extracted: true
   contains:
     source: Literature
     target: Experiment
     cardinality: one_to_many
-  uses_model:
-    source: Experiment
-    target: Swine_Model
-    cardinality: many_to_one
   uses_animal:
     source: Experiment
     target: Swine
@@ -36,11 +32,7 @@ relations:
     cardinality: one_to_many
   uses:
     source: Intervention
-    target: [Alternative, Composite_Product]
-    cardinality: many_to_one
-  applied_to:
-    source: Intervention
-    target: Swine_Model
+    target: [Alternative]
     cardinality: many_to_one
   measured_in:
     source: Indicator

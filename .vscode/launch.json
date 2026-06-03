@@ -6,7 +6,7 @@
             "type": "debugpy",
             "request": "launch",
             "module": "src.cli",
-            "args": ["debug", "--xml", "data/xml/PMC12183824.xml"],
+            "args": ["debug", "--xml", "data/xml/PMC12188611.xml"],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "env": {
@@ -18,7 +18,7 @@
             "type": "debugpy",
             "request": "launch",
             "module": "src.cli",
-            "args": ["extract", "--xml", "data/xml/PMC12183824.xml", "--no-skip-gate"],
+            "args": ["extract", "--xml", "data/xml/PMC12188611.xml", "--no-skip-gate"],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "env": {
@@ -30,7 +30,7 @@
             "type": "debugpy",
             "request": "launch",
             "module": "src.cli",
-            "args": ["extract", "--xml", "data/xml/PMC12183824.xml", "--skip-gate"],
+            "args": ["extract", "--xml", "data/xml/PMC12188611.xml", "--skip-gate"],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "env": {

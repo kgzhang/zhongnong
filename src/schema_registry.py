@@ -320,6 +320,7 @@ class SchemaRegistry:
                 match_fields=v.get("match_fields", []),
                 match_mode=v.get("match_mode", "exact"),
                 inject_in_prompt=v.get("inject_in_prompt", True),
+                value_delimiter=v.get("value_delimiter"),
             )
         return EntityDef(
             name=name,
@@ -497,7 +498,26 @@ class SchemaRegistry:
             f'Entity types to extract: {", ".join(entity_names)}\n'
             f'Required fields per entity:\n{field_list}\n'
             f'JSON format: {{"extractions": [{{"EntityType": "primary_value", "EntityType_attributes": {{"field_name": value, ...}}}}, ...]}}\n'
-            f'ALL attribute keys MUST be in English as specified above. DO NOT translate field names to Chinese.'
+            f'ALL attribute keys MUST be in English as specified above. DO NOT translate field names to Chinese.\n'
+            f'\n'
+            f'CRITICAL OUTPUT FORMAT RULES:\n'
+            f'- Use the entity type name (e.g. "Alternative") directly as the JSON key, with the primary value as its value.\n'
+            f'  Correct: {{"Alternative": "thymol", "Alternative_attributes": {{"standard_name": "thymol"}}}}\n'
+            f'  WRONG: {{"entity_type": "Alternative", "entity_value": "thymol"}}  -- do NOT use "entity_type" as a JSON key!\n'
+            f'- The attributes key MUST be "<EntityType>_attributes" exactly, not "attributes".\n'
+            f'\n'
+            f'CRITICAL ENTITY DISAMBIGUATION RULES:\n'
+            f'- Use the canonical full name as the primary value. Put abbreviations, acronyms, or alternate names in the abbreviation field, NOT as separate entities.\n'
+            f'- Be case-consistent. Use the same canonical name (e.g. "microbe-derived antioxidants") for the same entity throughout the document.\n'
+            f'- Hyphenated names (e.g. "microbe-derived") and non-hyphenated variants (e.g. "microbe derived") refer to the SAME entity — always use the hyphenated canonical form.\n'
+            f'- If you encounter an abbreviation/acronym, expand it to the full name for the primary value and put the abbreviation in the abbreviation field.\n'
+            f'\n'
+            f'STRICT VALUE RULES:\n'
+            f'- NEVER output "none", "unspecified", "unknown", "Not reported", "N/A", "na", or any similar placeholder as a value. If information is genuinely absent, use an EMPTY STRING "" instead.\n'
+            f'- NEVER invent or guess values. Only extract what is explicitly stated in the text.\n'
+            f'- For Method entities: ONLY extract BIOLOGICAL EXPERIMENTAL METHODS (e.g. 16S rRNA sequencing, ELISA, gas chromatography, histological staining, biochemical assays). Do NOT extract statistical tests (T-test, ANOVA, MIXED procedure, GLM), bioinformatics analysis tools (LEfSe, PCoA, NMDS), generic actions (weighing, counting, measuring), or software names (SAS, SPSS, ImageJ) as Method entities.\n'
+            f'- Each Intervention must have a SPECIFIC substance+dose combination. A single experiment should produce DISTINCT Intervention entities for each unique treatment, not duplicate entities describing the same treatment.\n'
+            f'- For Control_Group names: use the paper\'s own group labels (e.g., \'CON\', \'Control\', \'Basal diet\'). Do NOT invent names based on doses or substances.\n'
         )
 
         for ename in entity_names:
@@ -508,7 +528,18 @@ class SchemaRegistry:
             if ed.extraction_guidance:
                 parts.append(f"\n{ed.extraction_guidance}")
             if ed.notes:
-                parts.append(f"\n注意: {ed.notes}")
+                parts.append(f"\nNote: {ed.notes}")
+
+            # Inject enum field constraints so the model knows allowed values
+            llm_fields = self.llm_output_fields(ename)
+            enum_fields = [a for a in llm_fields if a.type == "enum" and a.enum_values]
+            if enum_fields:
+                enum_lines = ["\nAllowed values for enum fields:"]
+                for a in enum_fields:
+                    vals = ", ".join(a.enum_values)
+                    enum_lines.append(f"  - {a.name}: [{vals}]")
+                parts.append("\n".join(enum_lines))
+
             # Inject vocabulary summary (categories + examples, not full list)
             vocab = self.vocabulary(ename)
             if vocab and vocab.entries and (ed.vocabulary and ed.vocabulary.inject_in_prompt):
@@ -542,6 +573,8 @@ class SchemaRegistry:
             primary_field = ed.primary_text
             lookup_value = attrs.get(primary_field, extraction.extraction_text)
             self._apply_vocabulary(attrs, vocab, lookup_value, ed)
+            # Second-pass best-effort match for unmatched entries
+            self._second_pass_match(attrs, vocab, lookup_value, ed)
 
         extraction.attributes = attrs
         return extraction
@@ -553,7 +586,7 @@ class SchemaRegistry:
         lookup_value: str,
         ed: EntityDef,
     ) -> None:
-        """Generic vocabulary matching — populates classification fields.
+        """Enhanced vocabulary matching with cascading match strategies.
 
         Uses the vocabulary binding's field mappings for the matched row,
         avoiding hardcoded Alternative-specific column names.
@@ -562,35 +595,162 @@ class SchemaRegistry:
         if not binding:
             return
 
-        # Try exact then fuzzy
-        match = vocab.lookup(lookup_value) or vocab.fuzzy_match(lookup_value)
-
-        # Map matched row fields → entity attribute names using column mapping from entities.yaml
-        class_attr = "class_field"  # attribute name on the entity that stores the class
-        # Determine which entity attribute gets the class value
-        # Look for a post field that's an enum (typically the classification field)
+        # Determine class and subclass attribute names
+        class_attr = "class_field"
+        subclass_attr = None
         for a in ed.attributes:
-            if a.source == "post" and a.type == "enum":
+            if a.source == "post" and a.type == "enum" and a.name != "match_source":
                 class_attr = a.name
-                break
+            elif a.source == "post" and a.type == "string" and a.name != "match_source":
+                subclass_attr = a.name
+
+        match = self._cascading_match(lookup_value, vocab, binding)
 
         if match:
-            # Use the binding's field names to extract values from the matched TSV row
             row_class = match.get(binding.class_field or "", "")
             row_subclass = match.get(binding.subclass_field or "", "")
             attrs[class_attr] = row_class or "Other"
-            if row_subclass:
-                for a in ed.attributes:
-                    if a.source == "post" and a.type == "string" and a.name != class_attr:
-                        attrs[a.name] = row_subclass
-                        break
+            if row_subclass and subclass_attr:
+                attrs[subclass_attr] = row_subclass
 
             # match_source: distinguish exact vs fuzzy
             is_exact = vocab.lookup(lookup_value) is not None
+            if not is_exact:
+                cleaned = Vocabulary._clean_name(lookup_value)
+                is_exact = vocab.lookup(cleaned) is not None
             attrs.setdefault("match_source", "exact" if is_exact else "fuzzy")
         else:
             attrs.setdefault(class_attr, "Other")
             attrs.setdefault("match_source", "unmatched")
+
+    def _cascading_match(
+        self,
+        lookup_value: str,
+        vocab: Vocabulary,
+        binding: VocabularyBinding,
+    ) -> dict | None:
+        """Cascading match strategies from exact to fuzzy.
+
+        1. Exact match (case-insensitive)
+        2. Cleaned name (strips parentheticals)
+        3. Substring match
+        4. Normalized match (strip punctuation, lowercase)
+        5. Levenshtein distance <= 3
+        6. Comma-separated split and individual match
+        """
+        name = lookup_value.strip()
+        if not name:
+            return None
+
+        # 1. Exact match (case-insensitive)
+        match = vocab.lookup(name)
+        if match:
+            return match
+
+        # 2. Cleaned name (strip parentheticals)
+        cleaned = Vocabulary._clean_name(name)
+        if cleaned.lower() != name.lower():
+            match = vocab.lookup(cleaned)
+            if match:
+                return match
+
+        # 3. Substring match (vocab entry contains extraction name or vice versa)
+        norm = _normalize(name)
+        if norm:
+            for key, entry in vocab.by_name.items():
+                key_norm = _normalize(key)
+                if norm in key_norm or key_norm in norm:
+                    return entry
+
+        # 4. Normalized match (strip all punctuation and spaces, lowercase, compare)
+        agg_norm = re.sub(r'[^a-z0-9]', '', name.lower())
+        if agg_norm:
+            for key, entry in vocab.by_name.items():
+                key_agg = re.sub(r'[^a-z0-9]', '', key.lower())
+                if agg_norm == key_agg:
+                    return entry
+
+        # 5. Levenshtein distance <= 3
+        best = None
+        best_dist = 1000
+        for key, entry in vocab.by_name.items():
+            key_norm = _normalize(key)
+            dist = _levenshtein_distance(norm, key_norm)
+            if dist < best_dist and dist <= 3:
+                best_dist = dist
+                best = entry
+        if best:
+            return best
+
+        # 6. Comma-separated lookup: try each part individually
+        if ',' in name:
+            for part in name.split(','):
+                part = part.strip()
+                if part:
+                    match = self._cascading_match(part, vocab, binding)
+                    if match:
+                        return match
+
+        return None
+
+    def _second_pass_match(
+        self,
+        attrs: dict[str, Any],
+        vocab: Vocabulary,
+        lookup_value: str,
+        ed: EntityDef,
+    ) -> None:
+        """Second-pass best-effort match for unmatched Alternatives.
+
+        Uses aggressive normalization (remove spaces and punctuation)
+        to find partial matches in the vocabulary.
+        """
+        binding = ed.vocabulary
+        if not binding:
+            return
+
+        # Determine class attribute name
+        class_attr = None
+        for a in ed.attributes:
+            if a.source == "post" and a.type == "enum" and a.name != "match_source":
+                class_attr = a.name
+                break
+
+        if not class_attr:
+            return
+
+        # Only run if currently unmatched
+        current = attrs.get(class_attr, "")
+        if current != "Other":
+            return
+
+        name = lookup_value.strip()
+        if not name:
+            return
+
+        # Aggressive normalization: remove spaces and punctuation
+        agg_norm = re.sub(r'[^a-z0-9]', '', name.lower())
+        if not agg_norm:
+            return
+
+        for key, entry in vocab.by_name.items():
+            key_agg = re.sub(r'[^a-z0-9]', '', key.lower())
+            if not key_agg:
+                continue
+            # Check if either contains the other (partial match)
+            if agg_norm in key_agg or key_agg in agg_norm:
+                row_class = entry.get(binding.class_field or "", "")
+                if row_class and row_class != "Other":
+                    attrs[class_attr] = row_class
+                    attrs["match_source"] = "fuzzy"
+                    # Also set subclass if available
+                    for a in ed.attributes:
+                        if a.source == "post" and a.type == "string" and a.name != "match_source" and a.name != class_attr:
+                            row_subclass = entry.get(binding.subclass_field or "", "")
+                            if row_subclass:
+                                attrs[a.name] = row_subclass
+                            break
+                    return
 
     def evaluate_gate(
         self,

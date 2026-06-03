@@ -10,6 +10,8 @@ from src.graph import (
     Graph,
     build_graph,
     export_neo4j_csv,
+    _normalize_name,
+    _deduplicate_global_nodes,
 )
 
 
@@ -39,9 +41,17 @@ class TestEntityGlobalId:
         assert gid.startswith("alte")
 
     def test_global_types_ignore_pmid(self):
+        # With global_types set, PMID is ignored → same ID
+        global_types = frozenset({"Alternative"})
+        id1 = entity_global_id("Alternative", "thymol", "12345", global_types=global_types)
+        id2 = entity_global_id("Alternative", "thymol", "67890", global_types=global_types)
+        assert id1 == id2  # same name, different PMIDs → same ID
+
+    def test_article_scoped_when_not_global(self):
+        # Without global_types, all types are article-scoped → different IDs
         id1 = entity_global_id("Alternative", "thymol", "12345")
         id2 = entity_global_id("Alternative", "thymol", "67890")
-        assert id1 == id2  # same name, different PMIDs → same ID
+        assert id1 != id2  # different PMIDs → different IDs
 
     def test_case_sensitive_name(self):
         id1 = entity_global_id("Alternative", "Thymol")
@@ -186,6 +196,7 @@ class TestBuildGraph:
         from src.schema_registry import SchemaRegistry
 
         registry = SchemaRegistry()
+        global_types = frozenset({"Alternative"})
         ext1 = Extraction(
             extraction_class="Alternative", extraction_text="thymol",
             attributes={"standard_name": "thymol"},
@@ -198,8 +209,8 @@ class TestBuildGraph:
             DocumentExtractionResult(document_id="111", metadata={"doi": "10.1", "pmid": "111"}, extractions=[ext1]),
             DocumentExtractionResult(document_id="222", metadata={"doi": "10.2", "pmid": "222"}, extractions=[ext2]),
         ]
-        graph = build_graph(results, registry)
-        assert len(graph.nodes) == 1  # deduped
+        graph = build_graph(results, registry, global_types=global_types)
+        assert len(graph.nodes) == 1  # deduped because Alternative is global
         node = graph.nodes[0]
         assert "111" in node.source_pmids
         assert "222" in node.source_pmids
@@ -284,6 +295,7 @@ class TestBuildGraph:
         from src.schema_registry import SchemaRegistry
 
         registry = SchemaRegistry()
+        global_types = frozenset({"Alternative"})
         ext1 = Extraction(
             extraction_class="Alternative", extraction_text="thymol",
             attributes={"standard_name": "thymol", "abbreviation": "THY"},
@@ -296,9 +308,211 @@ class TestBuildGraph:
             DocumentExtractionResult(document_id="111", metadata={"doi": "10.1", "pmid": "111"}, extractions=[ext1]),
             DocumentExtractionResult(document_id="222", metadata={"doi": "10.2", "pmid": "222"}, extractions=[ext2]),
         ]
-        graph = build_graph(results, registry)
+        graph = build_graph(results, registry, global_types=global_types)
         assert len(graph.nodes) == 1
         node = graph.nodes[0]
         # First article's properties kept; second fills missing
         assert node.properties.get("abbreviation") == "THY"
         assert node.properties.get("cas_number") == "89-83-8"
+
+
+class TestNormalizeName:
+    """Tests for the _normalize_name helper (Issue 5A)."""
+
+    def test_strips_whitespace(self):
+        assert _normalize_name("  thymol  ") == "thymol"
+
+    def test_lowercases(self):
+        assert _normalize_name("Thymol") == "thymol"
+        assert _normalize_name("THYMOL") == "thymol"
+
+    def test_replaces_hyphens(self):
+        assert _normalize_name("microbe-derived") == "microbe derived"
+
+    def test_replaces_underscores(self):
+        assert _normalize_name("microbe_derived") == "microbe derived"
+
+    def test_collapses_internal_whitespace(self):
+        assert _normalize_name("microbe   derived") == "microbe derived"
+
+    def test_combined_normalization(self):
+        """Hyphens + capitals + whitespace all normalized together."""
+        result = _normalize_name("  Microbe-Derived_Antioxidants  ")
+        assert result == "microbe derived antioxidants"
+
+
+class TestEntityGlobalIdNormalization:
+    """Issue 5A: hyphens and case variants map to the same ID."""
+
+    def test_hyphen_vs_space(self):
+        gid1 = entity_global_id("Alternative", "microbe-derived antioxidants")
+        gid2 = entity_global_id("Alternative", "microbe derived antioxidants")
+        assert gid1 == gid2
+
+    def test_case_variants(self):
+        gid1 = entity_global_id("Alternative", "Microbe-derived Antioxidants")
+        gid2 = entity_global_id("Alternative", "microbe-derived antioxidants")
+        assert gid1 == gid2
+
+    def test_hyphen_space_case_mix(self):
+        gid1 = entity_global_id("Alternative", "Microbe-Derived Antioxidants")
+        gid2 = entity_global_id("Alternative", "microbe derived antioxidants")
+        assert gid1 == gid2
+
+
+class TestBuildGraphPrimaryTextIdentity:
+    """Issue 5B: use primary_text (standard_name) as identity key."""
+
+    def test_uses_standard_name_for_id(self):
+        """When extraction_text is an abbreviation but standard_name is the
+        full name, the node ID should be based on standard_name."""
+        from src.data import Extraction
+        from src.extraction import DocumentExtractionResult
+        from src.schema_registry import SchemaRegistry
+
+        registry = SchemaRegistry()
+        global_types = frozenset({"Alternative"})
+        ext = Extraction(
+            extraction_class="Alternative",
+            extraction_text="MA",
+            attributes={
+                "standard_name": "microbe-derived antioxidants",
+                "abbreviation": "MA",
+            },
+        )
+        result = DocumentExtractionResult(
+            document_id="12345", metadata={"doi": "10.1", "pmid": "12345"},
+            extractions=[ext],
+        )
+        graph = build_graph([result], registry, global_types=global_types)
+        assert len(graph.nodes) == 1
+        node = graph.nodes[0]
+        # Properties keep the original extraction_text as "name"
+        assert node.properties["name"] == "MA"
+        # But the node ID should be derived from standard_name, not "MA"
+        expected_id = entity_global_id(
+            "Alternative", "microbe-derived antioxidants",
+            global_types=global_types,
+        )
+        assert node.id == expected_id
+
+    def test_abbreviation_and_full_name_same_node(self):
+        """Two extractions of the same entity — one using full name as primary
+        text, one using abbreviation — should produce a single node."""
+        from src.data import Extraction
+        from src.extraction import DocumentExtractionResult
+        from src.schema_registry import SchemaRegistry
+
+        registry = SchemaRegistry()
+        global_types = frozenset({"Alternative"})
+
+        # Chunk A: full name
+        ext1 = Extraction(
+            extraction_class="Alternative",
+            extraction_text="microbe-derived antioxidants",
+            attributes={
+                "standard_name": "microbe-derived antioxidants",
+                "abbreviation": "MA",
+            },
+        )
+        # Chunk B: abbreviation as primary, but standard_name given
+        ext2 = Extraction(
+            extraction_class="Alternative",
+            extraction_text="MA",
+            attributes={
+                "standard_name": "microbe-derived antioxidants",
+                "abbreviation": "MA",
+            },
+        )
+        results = [
+            DocumentExtractionResult(
+                document_id="111", metadata={"doi": "10.1", "pmid": "111"},
+                extractions=[ext1],
+            ),
+            DocumentExtractionResult(
+                document_id="222", metadata={"doi": "10.2", "pmid": "222"},
+                extractions=[ext2],
+            ),
+        ]
+        graph = build_graph(results, registry, global_types=global_types)
+        assert len(graph.nodes) == 1
+
+
+class TestBuildGraphDedup:
+    """Issue 5C: post-processing dedup merges abbreviation-only extractions."""
+
+    def test_abbreviation_dedup(self):
+        """When one extraction uses the full name and another uses the
+        abbreviation WITHOUT a standard_name attribute, the dedup step
+        should merge them."""
+        from src.data import Extraction
+        from src.extraction import DocumentExtractionResult
+        from src.schema_registry import SchemaRegistry
+
+        registry = SchemaRegistry()
+        global_types = frozenset({"Alternative"})
+
+        # Chunk A: full name with abbreviation field
+        ext1 = Extraction(
+            extraction_class="Alternative",
+            extraction_text="microbe-derived antioxidants",
+            attributes={
+                "standard_name": "microbe-derived antioxidants",
+                "abbreviation": "MA",
+            },
+        )
+        # Chunk B: abbreviation only, NO standard_name
+        ext2 = Extraction(
+            extraction_class="Alternative",
+            extraction_text="MA",
+            attributes={},
+        )
+        results = [
+            DocumentExtractionResult(
+                document_id="111", metadata={"doi": "10.1", "pmid": "111"},
+                extractions=[ext1],
+            ),
+            DocumentExtractionResult(
+                document_id="222", metadata={"doi": "10.2", "pmid": "222"},
+                extractions=[ext2],
+            ),
+        ]
+        graph = build_graph(results, registry, global_types=global_types)
+        # Should be 1 node after dedup, because "MA" matches ext1's abbreviation
+        assert len(graph.nodes) == 1
+        node = graph.nodes[0]
+        assert "111" in node.source_pmids
+        assert "222" in node.source_pmids
+
+    def test_dedup_merges_edge_pmids(self):
+        """After dedup merge, edges should have correct source_pmids and
+        no stale references."""
+        from src.data import Extraction
+        from src.extraction import DocumentExtractionResult
+        from src.schema_registry import SchemaRegistry
+
+        registry = SchemaRegistry()
+        global_types = frozenset({"Alternative"})
+
+        ext1 = Extraction(
+            extraction_class="Alternative",
+            extraction_text="thymol",
+            attributes={"standard_name": "thymol", "abbreviation": "THY"},
+        )
+        ext2 = Extraction(
+            extraction_class="Alternative",
+            extraction_text="THY",
+            attributes={},
+        )
+        results = [
+            DocumentExtractionResult(
+                document_id="111", metadata={"doi": "10.1", "pmid": "111"},
+                extractions=[ext1],
+            ),
+            DocumentExtractionResult(
+                document_id="222", metadata={"doi": "10.2", "pmid": "222"},
+                extractions=[ext2],
+            ),
+        ]
+        graph = build_graph(results, registry, global_types=global_types)
+        assert len(graph.nodes) == 1

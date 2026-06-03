@@ -1,8 +1,9 @@
 """Annotator — orchestrates the full extraction pipeline.
 
 Ties together chunking, prompting, inference, resolution, alignment,
-evidence extraction, and source location.
+and evidence derivation.
 """
+
 from __future__ import annotations
 
 import logging
@@ -15,7 +16,7 @@ from src.data import (
     Document,
     Extraction,
 )
-from src.evidence import EvidenceExtractor
+from src.evidence import derive_evidence_batch
 from src.format_handler import FormatHandler
 from src.prompting import (
     ContextAwarePromptBuilder,
@@ -23,7 +24,6 @@ from src.prompting import (
     QAPromptGenerator,
 )
 from src.resolver import Resolver
-from src.source_location import SourceLocationResolver
 from src.tokenizer import RegexTokenizer, TokenizedText, Tokenizer
 
 logger = logging.getLogger(__name__)
@@ -41,12 +41,6 @@ class Annotator:
     format_handler:
         Format handler for parsing model output.  Created with JSON defaults
         when not supplied.
-    evidence_extractor:
-        Extracts verbatim evidence around aligned extractions.  Default
-        :class:`EvidenceExtractor` when not supplied.
-    source_location_resolver:
-        Derives section-level source locations.  Default
-        :class:`SourceLocationResolver` when not supplied.
     """
 
     def __init__(
@@ -54,16 +48,10 @@ class Annotator:
         language_model,
         prompt_template: PromptTemplateStructured,
         format_handler: FormatHandler | None = None,
-        evidence_extractor: EvidenceExtractor | None = None,
-        source_location_resolver: SourceLocationResolver | None = None,
     ) -> None:
         self.language_model = language_model
         self.prompt_template = prompt_template
         self.format_handler = format_handler or FormatHandler(use_fences=False)
-        self.evidence_extractor = evidence_extractor or EvidenceExtractor()
-        self.source_location_resolver = (
-            source_location_resolver or SourceLocationResolver()
-        )
 
         self._qa_generator = QAPromptGenerator(
             template=prompt_template,
@@ -100,7 +88,6 @@ class Annotator:
             >1 = multi-pass with merge of non-overlapping extractions.
         context_window_chars:
             Number of characters from the previous chunk to include as context.
-            Passed to ContextAwarePromptBuilder.
         show_progress:
             When True, log progress information.
         tokenizer:
@@ -130,15 +117,11 @@ class Annotator:
         else:
             # Multi-pass: collect all extractions per document across passes,
             # then merge non-overlapping.
-            all_pass_extractions: dict[
-                str, list[list[Extraction]]
-            ] = {}  # doc_id → [pass1_extractions, pass2_extractions, ...]
+            all_pass_extractions: dict[str, list[list[Extraction]]] = {}
 
             for pass_idx in range(extraction_passes):
                 if show_progress:
-                    logger.info(
-                        "Extraction pass %d/%d", pass_idx + 1, extraction_passes
-                    )
+                    logger.info("Extraction pass %d/%d", pass_idx + 1, extraction_passes)
                 for annotated in self._annotate_single_pass(
                     documents=documents,
                     resolver=resolver,
@@ -171,32 +154,16 @@ class Annotator:
         max_char_buffer: int = 200,
         **kwargs: Any,
     ) -> AnnotatedDocument:
-        """Convenience: wrap *text* in a Document and return the first result.
-
-        Parameters
-        ----------
-        text:
-            Raw text to annotate.
-        resolver:
-            Ignored (accepted for API compatibility).  The Annotator creates
-            its own Resolver from the internal FormatHandler.
-        max_char_buffer:
-            Passed to :meth:`annotate_documents`.
-        **kwargs:
-            Passed through to :meth:`annotate_documents`.
-
-        Returns
-        -------
-        AnnotatedDocument
-        """
+        """Convenience: wrap *text* in a Document and return the first result."""
         document_id = kwargs.pop("document_id", None)
-        doc = Document(text=text, document_id=document_id)
+        additional_context = kwargs.pop("additional_context", None)
+        doc = Document(
+            text=text,
+            document_id=document_id,
+            additional_context=additional_context,
+        )
         results = list(
-            self.annotate_documents(
-                [doc],
-                max_char_buffer=max_char_buffer,
-                **kwargs,
-            )
+            self.annotate_documents([doc], max_char_buffer=max_char_buffer, **kwargs)
         )
         if results:
             return results[0]
@@ -251,10 +218,13 @@ class Annotator:
                 for chunk in batch
             ]
 
-            # Progress: show chunk count and prompt lengths
             prompt_lens = [len(p) for p in batch_prompts]
-            logger.debug("Batch %d: %d chunks, prompt sizes %s",
-                          batch_count, len(batch), prompt_lens)
+            logger.debug(
+                "Batch %d: %d chunks, prompt sizes %s",
+                batch_count,
+                len(batch),
+                prompt_lens,
+            )
 
             # Run inference on the batch
             try:
@@ -287,7 +257,6 @@ class Annotator:
                     tok=tok,
                 )
 
-            # Track which document IDs we have seen so far
             seen_doc_ids.update(batch_doc_ids)
 
             # Emit completed documents
@@ -334,7 +303,7 @@ class Annotator:
         if not output_text:
             return
 
-        # Resolve LLM output → Extraction objects
+        # 1. Resolve LLM output → Extraction objects
         try:
             extractions = list(resolver.resolve(output_text))
         except Exception:
@@ -344,38 +313,48 @@ class Annotator:
         if not extractions:
             return
 
-        # Align extractions to the full document text with chunk offsets
-        tt: TokenizedText
-        tt = getattr(doc, "tokenized_text", None)  # type: ignore[assignment]
-        if tt is None:
-            tt = tok.tokenize(doc.text)
-
+        # 2. Compute offsets: map chunk-level positions to document-level
         token_offset = chunk.token_interval.start_index
         char_offset = chunk.char_interval.start_pos or 0
 
+        # 3. Align extractions to the CHUNK text (not the full document).
+        #    Offsets map chunk positions back to document coordinates.
+        #    This matches how the original langextract does it.
+        chunk_text = chunk.chunk_text
+        chunk_text_stripped = chunk.sanitized_chunk_text
+
+        # Alignment works against the chunk text for precision.
+        # The prompt uses sanitized_chunk_text, so alignment should too.
+        # Use the non-stripped chunk_text for alignment since extractions
+        # refer to positions in the original text.
         try:
             aligned = list(
                 resolver.align(
                     extractions,
-                    doc.text,
+                    chunk_text,
                     token_offset=token_offset,
                     char_offset=char_offset,
+                    tokenizer_impl=tok,
                 )
             )
         except Exception:
             logger.debug("Alignment failed for chunk", exc_info=True)
-            return
+            # Fall back: use extractions without alignment
+            aligned = list(extractions)
 
-        # Enrich with evidence text
-        self.evidence_extractor.extract_batch(aligned, doc.text, tt)
+        # 4. Derive evidence text from the full document text at aligned positions.
+        #    This is pure engineering — extract verbatim source text at char_interval.
+        derive_evidence_batch(aligned, doc.text)
 
-        # Enrich with source location
-        section_id = self._section_id_from_document(doc_id)
-        self.source_location_resolver.resolve_batch(
-            aligned, section_id, doc.text, char_offset
-        )
+        # 5. Guarantee every extraction has evidence containing its text.
+        #    Falls back to str.find() on the document if alignment didn't set char_interval.
+        from src.coreference import ensure_evidence_batch
+        ensure_evidence_batch(aligned, doc.text)
 
-        # Accumulate
+        # 6. Derive source location from the document context.
+        _derive_source_locations(aligned, doc_id, doc.text, char_offset)
+
+        # 7. Accumulate
         per_doc.setdefault(doc_id, []).extend(aligned)
 
     # ------------------------------------------------------------------
@@ -388,20 +367,15 @@ class Annotator:
         max_char_buffer: int,
         tokenizer: Tokenizer,
     ) -> Iterator[TextChunk]:
-        """Yield TextChunks from ChunkIterator for each document in order.
-
-        The ChunkIterator attaches ``tokenized_text`` to the Document object
-        so that downstream processing can reuse the same tokenization.
-        """
+        """Yield TextChunks from ChunkIterator for each document in order."""
         for doc in documents:
             ci = ChunkIterator(
-                text=doc.text,
+                text_or_tokenized=doc.text,
                 max_char_buffer=max_char_buffer,
                 tokenizer_impl=tokenizer,
                 document=doc,
             )
-            for chunk in ci:
-                yield chunk
+            yield from ci
 
     # ------------------------------------------------------------------
     # Internal: streaming emit
@@ -421,26 +395,10 @@ class Annotator:
         later document in *doc_ids_ordered* (since chunks come in document
         order).  When *keep_last_doc* is ``True`` the furthest-seen document
         is held back because it may still have pending chunks.
-
-        Parameters
-        ----------
-        per_doc:
-            Accumulated extractions keyed by document ID.  Entries for yielded
-            documents are popped.
-        doc_ids_ordered:
-            Document IDs in the order they were submitted.
-        seen_doc_ids:
-            Set of document IDs that have appeared in processed batches so far.
-        keep_last_doc:
-            When True, the last document whose chunks have been seen is held
-            back (it may still have more chunks coming).
-        doc_map:
-            Original Document objects keyed by ID.
         """
         if not seen_doc_ids:
             return
 
-        # Find the index of the furthest-seen document in the ordered list
         max_seen_idx = -1
         for i, doc_id in enumerate(doc_ids_ordered):
             if doc_id in seen_doc_ids:
@@ -449,7 +407,6 @@ class Annotator:
         if max_seen_idx < 0:
             return
 
-        # Determine the range of documents to emit
         end_idx = max_seen_idx if keep_last_doc else len(doc_ids_ordered)
 
         to_emit: list[str] = []
@@ -475,26 +432,14 @@ class Annotator:
     def _merge_non_overlapping(
         self, all_pass_extractions: list[list[Extraction]]
     ) -> list[Extraction]:
-        """Multi-pass merge: first-pass extractions win for overlapping
-        character intervals.
-
-        Parameters
-        ----------
-        all_pass_extractions:
-            List of extraction lists, one per pass.
-
-        Returns
-        -------
-        list[Extraction]
-            Merged list of non-overlapping extractions.
-        """
+        """Multi-pass merge: first-pass extractions win for overlapping intervals."""
         if not all_pass_extractions:
             return []
 
         if len(all_pass_extractions) == 1:
             return all_pass_extractions[0]
 
-        result = list(all_pass_extractions[0])  # First pass wins
+        result = list(all_pass_extractions[0])
 
         for pass_extractions in all_pass_extractions[1:]:
             for ext in pass_extractions:
@@ -503,39 +448,9 @@ class Annotator:
 
         return result
 
-    # ------------------------------------------------------------------
-    # Internal: helpers
-    # ------------------------------------------------------------------
-
     @staticmethod
-    def _section_id_from_document(document_id: str) -> str:
-        """Extract a human-readable section name from a document ID.
-
-        Converts ``"PMC123_methods"`` → ``"Methods"``.
-
-        Parameters
-        ----------
-        document_id:
-            A document identifier that may contain a section suffix.
-
-        Returns
-        -------
-        str
-            Section name with the first character capitalised.
-        """
-        parts = document_id.rsplit("_", 1)
-        if len(parts) == 1:
-            return parts[0]
-        return parts[1].capitalize()
-
-    @staticmethod
-    def _overlaps_with_any(
-        extraction: Extraction, existing: list[Extraction]
-    ) -> bool:
-        """Return True when *extraction* overlaps with any in *existing*.
-
-        Overlap is determined by character intervals.
-        """
+    def _overlaps_with_any(extraction: Extraction, existing: list[Extraction]) -> bool:
+        """Return True when *extraction* overlaps with any in *existing*."""
         ci = extraction.char_interval
         if ci is None or ci.start_pos is None or ci.end_pos is None:
             return False
@@ -544,8 +459,71 @@ class Annotator:
             oci = other.char_interval
             if oci is None or oci.start_pos is None or oci.end_pos is None:
                 continue
-            # Overlap: intervals [a,b) and [c,d) overlap if a < d and c < b
             if ci.start_pos < oci.end_pos and oci.start_pos < ci.end_pos:
                 return True
 
         return False
+
+
+# ---------------------------------------------------------------------------
+# Internal: source location derivation
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+_TABLE_PATTERN = _re.compile(r"(Table|Tab\.)\s*\d+", _re.IGNORECASE)
+_FIGURE_PATTERN = _re.compile(r"(Figure|Fig\.)\s*\d+", _re.IGNORECASE)
+
+
+def _derive_source_locations(
+    extractions: list[Extraction],
+    doc_id: str,
+    document_text: str,
+    char_offset: int,
+) -> None:
+    """Set ``source_location`` on each extraction.
+
+    Derives a human-readable location string from the document ID and
+    nearby table/figure references in the surrounding text.
+    """
+    section_id = _section_id_from_document_id(doc_id)
+    for ext in extractions:
+        ext.source_location = _resolve_location(
+            ext, section_id, document_text, char_offset
+        )
+
+
+def _section_id_from_document_id(document_id: str) -> str:
+    """Extract a human-readable section name from a document ID.
+
+    Converts ``"PMC123_methods"`` → ``"Methods"``.
+    """
+    parts = document_id.rsplit("_", 1)
+    if len(parts) == 1:
+        return parts[0]
+    return parts[1].capitalize()
+
+
+def _resolve_location(
+    extraction: Extraction,
+    section_id: str,
+    section_text: str,
+    char_offset: int,
+) -> str:
+    """Return a source location string for *extraction*."""
+    parts = [section_id]
+    ci = extraction.char_interval
+    if ci is not None and ci.start_pos is not None:
+        nearby_start = max(0, ci.start_pos - 200)
+        nearby_end = min(len(section_text), (ci.end_pos or 0) + 200)
+        nearby_text = section_text[nearby_start:nearby_end]
+        details = []
+        tm = _TABLE_PATTERN.search(nearby_text)
+        fm = _FIGURE_PATTERN.search(nearby_text)
+        if tm:
+            details.append(tm.group(0))
+        if fm:
+            details.append(fm.group(0))
+        if details:
+            parts.append(", ".join(details))
+    return ", ".join(parts)

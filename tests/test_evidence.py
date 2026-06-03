@@ -1,21 +1,18 @@
-"""Tests for evidence extractor."""
+"""Tests for evidence derivation."""
 import pytest
 from src.data import Extraction, CharInterval
-from src.tokenizer import RegexTokenizer
-from src.evidence import EvidenceExtractor
+from src.evidence import derive_evidence, derive_evidence_batch, EvidenceExtractor
 
 
 class TestEvidenceExtractor:
     def setup_method(self):
         self.extractor = EvidenceExtractor()
-        self.tokenizer = RegexTokenizer()
 
     def test_extract_evidence_aligned(self):
         text = (
             "Pigs were fed a basal diet supplemented with 500 mg/kg thymol. "
             "The trial lasted 28 days."
         )
-        tt = self.tokenizer.tokenize(text)
         thymol_start = text.index("thymol")
         thymol_end = thymol_start + len("thymol")
         ext = Extraction(
@@ -23,18 +20,16 @@ class TestEvidenceExtractor:
             extraction_text="thymol",
             char_interval=CharInterval(start_pos=thymol_start, end_pos=thymol_end),
         )
-        evidence = self.extractor.extract_evidence(ext, text, tt)
+        evidence = self.extractor.extract_evidence(ext, text)
         assert "thymol" in evidence
         assert len(evidence) > 0
 
     def test_extract_evidence_unaligned(self):
         ext = Extraction(extraction_class="Alternative", extraction_text="thymol")
-        tt = self.tokenizer.tokenize("Some text.")
-        assert self.extractor.extract_evidence(ext, "Some text.", tt) == ""
+        assert self.extractor.extract_evidence(ext, "Some text.") == ""
 
     def test_extract_batch(self):
         text = "Thymol was used. It improved growth."
-        tt = self.tokenizer.tokenize(text)
         t_start = text.index("Thymol")
         ext1 = Extraction(
             extraction_class="Alt",
@@ -44,9 +39,40 @@ class TestEvidenceExtractor:
         ext2 = Extraction(
             extraction_class="Alt", extraction_text="zinc", char_interval=None
         )
-        self.extractor.extract_batch([ext1, ext2], text, tt)
-        assert ext1.attributes["evidence_text"] != ""
-        assert ext2.attributes["evidence_text"] == ""
+        self.extractor.extract_batch([ext1, ext2], text)
+        # evidence_text is now a top-level field on Extraction, not in attributes
+        assert ext1.evidence_text != ""
+        assert ext2.evidence_text == ""
+
+    def test_derive_evidence_function(self):
+        """Module-level derive_evidence function works."""
+        text = "The study used thymol as a feed additive at 500 mg/kg."
+        start = text.index("thymol")
+        ext = Extraction(
+            extraction_class="Alt",
+            extraction_text="thymol",
+            char_interval=CharInterval(start, start + 6),
+        )
+        evidence = derive_evidence(ext, text, context_chars=20)
+        assert "thymol" in evidence
+        assert "feed additive" in evidence  # context included
+
+    def test_derive_evidence_batch_function(self):
+        """Module-level derive_evidence_batch sets evidence_text on all extractions."""
+        text = "Thymol and curcumin were tested."
+        t_start = text.index("Thymol")
+        c_start = text.index("curcumin")
+        ext1 = Extraction(
+            extraction_class="Alt", extraction_text="Thymol",
+            char_interval=CharInterval(t_start, t_start + 6),
+        )
+        ext2 = Extraction(
+            extraction_class="Alt", extraction_text="curcumin",
+            char_interval=CharInterval(c_start, c_start + 8),
+        )
+        derive_evidence_batch([ext1, ext2], text)
+        assert "Thymol" in ext1.evidence_text
+        assert "curcumin" in ext2.evidence_text
 
 
 class TestSourceLocation:

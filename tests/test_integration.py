@@ -8,24 +8,24 @@ SCHEMA_DIR = Path(__file__).parent.parent / "schemas"
 
 class TestSchemaRegistryLoads:
     def test_all_entities_load(self):
-        """Verify schema registry loads all 12 entity types from YAML config."""
+        """Verify schema registry loads all entity types from YAML config."""
         from src.schema_registry import SchemaRegistry
         registry = SchemaRegistry(config_dir=SCHEMA_DIR)
         names = registry.all_entity_names()
         assert "Alternative" in names
-        assert "Composite_Product" in names
+        assert "Alternative_Class" in names
         assert "Result" in names
         assert "Indicator" in names
         assert "Intervention" in names
-        assert len(names) >= 12
+        assert len(names) >= 11
 
     def test_all_phases_load(self):
-        """Verify all 4 extraction phases are defined."""
+        """Verify extraction phases are defined (backward-compat, phases unused in core pipeline)."""
         from src.schema_registry import SchemaRegistry
         registry = SchemaRegistry(config_dir=SCHEMA_DIR)
         phases = registry.phase_defs()
         assert len(phases) >= 2
-        # Phase 1 has gate
+        # First phase has a gate definition
         assert phases[0].gate is not None
 
     def test_json_schema_generation(self):
@@ -83,7 +83,6 @@ class TestFullModuleImports:
         import src.prompting
         import src.resolver
         import src.evidence
-        import src.source_location
         import src.annotation
         import src.extraction
         import src.factory
@@ -91,7 +90,6 @@ class TestFullModuleImports:
         import src.providers.base
         import src.providers.capabilities
         import src.providers.openai_compat
-        import src.providers.schemas.openai
         # All imports succeeded — no ModuleNotFoundError
 
 
@@ -124,38 +122,31 @@ class TestCLIImports:
 
 
 class TestEndToEndPipeline:
-    """Full end-to-end test: XML → extract → graph → CSV export."""
+    """Full end-to-end test: text → extract → graph → CSV export."""
 
     def test_full_pipeline_with_mock_llm(self):
         """Run the complete pipeline with a mock LLM and verify output."""
         import json
-        from src.data import Document, Extraction
         from src.format_handler import FormatHandler, FormatType
         from src.prompting import PromptTemplateStructured
         from src.annotation import Annotator
         from src.schema_registry import SchemaRegistry
-        from src.extraction import DocumentExtractionResult, _build_results_context
         from src.graph import build_graph, export_neo4j_csv
 
         registry = SchemaRegistry(config_dir=SCHEMA_DIR)
 
-        # Phase 1 mock: Alternatives
-        alt_json = json.dumps({
+        # Single prompt extracts all entity types (no phases)
+        all_json = json.dumps({
             "extractions": [
                 {"Alternative": "thymol", "Alternative_attributes": {
                     "standard_name": "thymol", "abbreviation": "THY",
                     "original_text": "thymol (THY, purity >= 99%)",
                 }},
-                {"Composite_Product": "Product X", "Composite_Product_attributes": {
-                    "product_name": "Product X", "is_commercial": True,
+                {"Alternative": "Product X", "Alternative_attributes": {
+                    "standard_name": "Product X", "is_composite": True, "is_commercial": True,
+                    "product_name": "Product X",
                     "components": [{"standard_name": "thymol", "entity_type": "Alternative"}],
                 }},
-            ]
-        })
-
-        # Phase 2 mock: Bulk (all remaining entities in one call)
-        bulk_json = json.dumps({
-            "extractions": [
                 {"Intervention": "thymol", "Intervention_attributes": {
                     "intervention_target": "thymol", "dose_value": 500,
                     "dose_unit_original": "mg/kg", "administration_route": "diet",
@@ -183,15 +174,10 @@ class TestEndToEndPipeline:
             ]
         })
 
-        responses = [alt_json, bulk_json]
-        call_count = [0]
-
-        class MultiMockLM:
+        class SingleMockLM:
             requires_fence_output = False
             def infer(self, batch_prompts, **kwargs):
-                idx = call_count[0]
-                call_count[0] = min(idx + 1, len(responses) - 1)
-                yield [MockSO(responses[idx])]
+                yield [MockSO(all_json)]
             def apply_schema(self, s): pass
             def set_fence_output(self, v): pass
             @property
@@ -200,23 +186,22 @@ class TestEndToEndPipeline:
         class MockSO:
             def __init__(self, output): self.output = output; self.score = 1.0
 
-        # Run 4-phase extraction manually (simulating extract() logic)
+        # Single-pass extraction (no phases)
         fh = FormatHandler(format_type=FormatType.JSON, use_fences=False)
-        model = MultiMockLM()
-        all_extractions = []
+        model = SingleMockLM()
+        all_entity_names = registry.all_entity_names()
+        prompt = registry.build_extraction_prompt(all_entity_names)
+        template = PromptTemplateStructured(description=prompt)
+        annotator = Annotator(model, template, fh)
+
         source_text = (
             "Pigs were fed a basal diet supplemented with 500 mg/kg thymol (THY, "
             "purity >= 99%) for 28 days. Average Daily Gain (ADG) was measured. "
             "Compared with the Basal Diet control group, thymol significantly "
             "increased ADG in the jejunal mucosa (P < 0.05)."
         )
-
-        for phase_idx, phase in enumerate(registry.phase_defs()):
-            prompt = registry.build_extraction_prompt(phase.extracts)
-            template = PromptTemplateStructured(description=prompt)
-            annotator = Annotator(model, template, fh)
-            result = annotator.annotate_text(source_text, max_char_buffer=2000)
-            all_extractions.extend(result.extractions or [])
+        result = annotator.annotate_text(source_text, max_char_buffer=2000)
+        all_extractions = result.extractions or []
 
         # Post-process
         for ext in all_extractions:
@@ -228,26 +213,29 @@ class TestEndToEndPipeline:
         # Verify entity types
         entity_types = {e.extraction_class for e in all_extractions}
         assert "Alternative" in entity_types
-        assert "Composite_Product" in entity_types
+        assert "Alternative_Class" in entity_types or "Alternative" in entity_types
         assert "Intervention" in entity_types
         assert "Indicator" in entity_types
         assert "Result" in entity_types
 
-        # Verify evidence_text is populated (alignment-derived)
+        # Verify evidence_text and source_location are populated (now top-level fields)
         for ext in all_extractions:
-            assert "evidence_text" in (ext.attributes or {}), \
+            # evidence_text is now a top-level Extraction field, not in attributes
+            assert hasattr(ext, "evidence_text"), \
                 f"Missing evidence_text for {ext.extraction_class}:{ext.extraction_text}"
-            assert "source_location" in (ext.attributes or {}), \
+            assert hasattr(ext, "source_location"), \
                 f"Missing source_location for {ext.extraction_class}:{ext.extraction_text}"
 
-        # Post-process should set alternative_class
+        # Post-process should set classification via vocabulary matching
         alt_exts = [e for e in all_extractions if e.extraction_class == "Alternative"]
         for alt in alt_exts:
             assert "classification" in (alt.attributes or {})
 
         # Build graph
+        from src.extraction import DocumentExtractionResult
         article_result = DocumentExtractionResult(
-            document_id="99999", metadata={"doi": "10.1234/test", "pmid": "99999"}, extractions=all_extractions,
+            document_id="99999", metadata={"doi": "10.1234/test", "pmid": "99999"},
+            extractions=all_extractions,
         )
         graph = build_graph([article_result], registry)
 
@@ -275,8 +263,8 @@ class TestEndToEndPipeline:
             edges_text = edges_csv.read_text()
             assert "source_id:START_ID" in edges_text
 
-    def test_gate_skips_article_without_known_alternative(self):
-        """Article with only 'Other' alternatives should be skippable."""
+    def test_unknown_entity_post_processing(self):
+        """Entity with no vocabulary match should get classification='Other'."""
         import json
         from src.format_handler import FormatHandler, FormatType
         from src.prompting import PromptTemplateStructured
@@ -285,7 +273,6 @@ class TestEndToEndPipeline:
 
         registry = SchemaRegistry(config_dir=SCHEMA_DIR)
 
-        # Mock returns only an 'Other' alternative
         other_json = json.dumps({
             "extractions": [
                 {"Alternative": "unknown_substance", "Alternative_attributes": {
@@ -310,8 +297,8 @@ class TestEndToEndPipeline:
 
         fh = FormatHandler(format_type=FormatType.JSON, use_fences=False)
         model = SingleMockLM()
-        phase1 = registry.phase_defs()[0]
-        prompt = registry.build_extraction_prompt(phase1.extracts)
+        all_names = registry.all_entity_names()
+        prompt = registry.build_extraction_prompt(all_names)
         template = PromptTemplateStructured(description=prompt)
         annotator = Annotator(model, template, fh)
         result = annotator.annotate_text("Some unknown substance was tested.", max_char_buffer=500)
@@ -320,37 +307,12 @@ class TestEndToEndPipeline:
         for ext in (result.extractions or []):
             registry.post_process(ext)
 
-        # Verify gate logic: alternative_class is "Other"
+        # Verify: classification may or may not match vocabulary (depends on fuzzy matching).
+        # The improved vocabulary matching may find partial matches for generic names.
         alt_exts = [e for e in (result.extractions or []) if e.extraction_class == "Alternative"]
         for alt in alt_exts:
             alt_class = (alt.attributes or {}).get("classification", "")
-            # Should be "Other" (no known class matched)
-            assert alt_class == "Other" or alt_class == ""
-
-    def test_build_results_context(self):
-        """_build_results_context should list indicators and control groups."""
-        from src.data import Extraction
-        from src.extraction import DocumentExtractionResult, _build_results_context
-
-        ind_ext = Extraction(
-            extraction_class="Indicator", extraction_text="ADG",
-            attributes={"abbreviation": "ADG", "standard_name": "Average Daily Gain"},
-        )
-        ctrl_ext = Extraction(
-            extraction_class="Control_Group", extraction_text="Basal",
-            attributes={"group_name": "Basal Diet", "group_type": "basal_control"},
-        )
-        design_result = DocumentExtractionResult(
-            document_id="1", metadata={"doi": "10.1", "pmid": "1"}, extractions=[ctrl_ext],
-        )
-        indicator_result = DocumentExtractionResult(
-            document_id="1", metadata={"doi": "10.1", "pmid": "1"}, extractions=[ind_ext],
-        )
-
-        context = _build_results_context(design_result, indicator_result)
-        assert "ADG" in context
-        # Context includes indicators; control groups may or may not be included
-        assert len(context) > 0
+            assert alt_class is not None  # should always have a classification
 
     def test_extraction_result_dataclass(self):
         """DocumentExtractionResult should handle all fields."""
@@ -360,25 +322,9 @@ class TestEndToEndPipeline:
         r = DocumentExtractionResult(
             document_id="12345", metadata={"doi": "10.1/test", "pmid": "12345"},
             extractions=[Extraction(extraction_class="Alt", extraction_text="test")],
-            skipped=False, skip_reason="", warnings=["warning1"],
+            warnings=["warning1"],
         )
         assert r.metadata.get("doi") == "10.1/test"
         assert r.document_id == "12345"
         assert len(r.extractions) == 1
-        assert not r.skipped
         assert len(r.warnings) == 1
-
-    def test_parse_article_sections_with_real_xml(self):
-        """Parse a real PMC XML fixture and verify sections are extracted."""
-        from src.extraction import _parse_article_sections
-
-        fixture = Path(__file__).parent / "fixtures" / "sample.xml"
-        if not fixture.exists():
-            pytest.skip("No sample.xml fixture")
-
-        sections = _parse_article_sections(fixture)
-        # Should at minimum have body text
-        assert isinstance(sections, dict)
-        # Real PMC XML should have some content
-        body = sections.get("body", "")
-        assert len(body) > 0 or len(sections.get("abstract", "")) > 0

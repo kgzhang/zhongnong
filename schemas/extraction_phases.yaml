@@ -2,7 +2,7 @@ phases:
   gate:
     description: "Scan for core entities — gate check before full extraction"
     sections: [methods, body, abstract]
-    extracts: [Alternative, Composite_Product]
+    extracts: [Alternative]
     gate:
       entity: Alternative
       condition: "classification not in ['Other', '', 'unmatched']"
@@ -12,6 +12,6 @@ phases:
     description: "Extract all remaining entities from the full document"
     sections: [methods, body, results, discussion]
     extracts:
-      [Experiment, Swine_Model, Swine, Intervention, Control_Group,
+      [Experiment, Swine, Intervention, Control_Group,
        Tissue_Site, Indicator, Method, Result]
     context_from: [gate]

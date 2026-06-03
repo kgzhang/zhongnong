@@ -46,9 +46,6 @@ class Settings(BaseSettings):
     checkpoint_dir: Path = Path("data/intermediates")
     schema_dir: Path = Path("schemas")
 
-    # Gate: if True, articles fail gate check → skip (driven by extraction_phases.yaml)
-    gate_enabled: bool = True
-
     # Debug
     debug: bool = False
     show_progress: bool = True

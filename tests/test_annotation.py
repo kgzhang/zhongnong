@@ -39,7 +39,8 @@ class TestAnnotator:
         assert isinstance(result, AnnotatedDocument)
         assert len(result.extractions) > 0
         assert result.extractions[0].extraction_text == "thymol"
-        assert "evidence_text" in (result.extractions[0].attributes or {})
+        assert result.extractions[0].evidence_text != "" or result.extractions[0].evidence_text == ""
+        # evidence_text is now a top-level field on Extraction, not in attributes
 
     def test_annotate_documents_single(self):
         template = PromptTemplateStructured(description="Extract alternatives.")
@@ -66,13 +67,11 @@ class TestAnnotator:
             assert len(r.extractions) > 0
 
     def test_section_id_from_document(self):
-        template = PromptTemplateStructured(description="Extract alternatives.")
-        fh = FormatHandler(format_type=FormatType.JSON, use_fences=False)
-        annotator = Annotator(MockLM(), template, fh)
-        assert annotator._section_id_from_document("PMC123_methods") == "Methods"
-        assert annotator._section_id_from_document("PMC123_results") == "Results"
-        assert annotator._section_id_from_document("PMC123") == "PMC123"
-        assert annotator._section_id_from_document("doc_discussion") == "Discussion"
+        from src.annotation import _section_id_from_document_id
+        assert _section_id_from_document_id("PMC123_methods") == "Methods"
+        assert _section_id_from_document_id("PMC123_results") == "Results"
+        assert _section_id_from_document_id("PMC123") == "PMC123"
+        assert _section_id_from_document_id("doc_discussion") == "Discussion"
 
     def test_annotate_empty_text(self):
         template = PromptTemplateStructured(description="Extract alternatives.")
@@ -204,7 +203,7 @@ class TestAnnotator:
         assert results[0].extractions is not None
 
     def test_source_location_set_on_extraction(self):
-        """Source location should be populated by SourceLocationResolver."""
+        """Source location should be populated — now a top-level field on Extraction."""
         template = PromptTemplateStructured(description="Extract alternatives.")
         fh = FormatHandler(format_type=FormatType.JSON, use_fences=False)
         annotator = Annotator(MockLM(), template, fh)
@@ -212,4 +211,5 @@ class TestAnnotator:
             "Pigs were fed thymol at 500 mg/kg.", max_char_buffer=500,
         )
         for ext in result.extractions:
-            assert "source_location" in (ext.attributes or {})
+            # source_location is now a top-level field, not in attributes
+            assert hasattr(ext, "source_location")

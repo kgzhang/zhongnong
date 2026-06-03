@@ -14,9 +14,9 @@ class TestSchemaRegistry:
     def test_load_entities(self):
         names = self.registry.all_entity_names()
         assert "Alternative" in names
-        assert "Composite_Product" in names
+        assert "Alternative_Class" in names
         assert "Result" in names
-        assert len(names) >= 12
+        assert len(names) >= 11
 
     def test_entity_def(self):
         ed = self.registry.entity_def("Alternative")
@@ -100,7 +100,7 @@ class TestSchemaRegistry:
 
     def test_json_schema_for_multiple_entities(self):
         """generate_json_schema with multiple entities creates anyOf variants."""
-        schema = self.registry.generate_json_schema(["Alternative", "Composite_Product"])
+        schema = self.registry.generate_json_schema(["Alternative", "Indicator"])
         items = schema["properties"]["extractions"]["items"]
         variants = items.get("anyOf", [])
         assert len(variants) >= 2
@@ -138,3 +138,37 @@ class TestSchemaRegistry:
         gated = [p for p in phases if p.gate is not None]
         assert len(gated) > 0
         assert gated[0].gate.entity is not None
+
+    def test_prompt_contains_disambiguation_rules(self):
+        """Issue 4A: Prompt should include disambiguation instructions."""
+        prompt = self.registry.build_extraction_prompt(["Alternative"])
+        assert "canonical full name" in prompt.lower() or "canonical" in prompt.lower()
+        assert "abbreviation" in prompt.lower()
+        assert "case-consistent" in prompt.lower() or "same canonical name" in prompt.lower()
+        assert "hyphenated" in prompt.lower()
+
+    def test_prompt_warns_against_entity_type_key(self):
+        """Issue 4B: Prompt should explicitly say not to use entity_type as key."""
+        prompt = self.registry.build_extraction_prompt(["Alternative"])
+        assert "do NOT use" in prompt or "WRONG" in prompt
+        assert "entity_type" in prompt  # mentioned in the warning
+
+    def test_prompt_includes_enum_constraints(self):
+        """Issue 4C: Prompt should list allowed values for enum fields."""
+        prompt = self.registry.build_extraction_prompt(["Alternative", "Result"])
+        # Result has direction enum
+        assert "increased" in prompt
+        assert "decreased" in prompt
+        # Alternative has no LLM enum fields (classification is post)
+        # but Result has direction, relation_type, significance_level
+        assert "Allowed values for enum fields" in prompt
+
+    def test_literature_excluded_from_extraction(self):
+        """Issue 2: Literature should be in all_entity_names but excluded
+        from LLM extraction entities."""
+        all_names = self.registry.all_entity_names()
+        assert "Literature" in all_names
+        # Simulate the filter applied in extract()
+        llm_names = [n for n in all_names if n != "Literature"]
+        assert "Literature" not in llm_names
+        assert "Alternative" in llm_names

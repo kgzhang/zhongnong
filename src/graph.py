@@ -1,6 +1,10 @@
 """Graph builder — deduplicates entities across articles, resolves edges, and
 exports Neo4j-compatible CSV files.
+
+Generic — no entity-type hardcoding.  The distinction between article-scoped
+and global entity types is controlled by the *global_types* parameter.
 """
+
 from __future__ import annotations
 
 import csv
@@ -42,39 +46,23 @@ class Graph:
 
 
 # ---------------------------------------------------------------------------
-# Entity types
+# Helpers
 # ---------------------------------------------------------------------------
 
-# Entity types that are scoped to a single article (PMID-dependent)
-_ARTICLE_SCOPED_TYPES = frozenset({
-    "Result",
-    "Experiment",
-    "Intervention",
-    "Swine",
-    "Swine_Model",
-    "Control_Group",
-    "Literature",
-})
 
-# Entity types that are global (name-based, shared across articles)
-_GLOBAL_TYPES = frozenset({
-    "Alternative",
-    "Alternative_Class",
-    "Composite_Product",
-    "Tissue_Site",
-    "Indicator",
-    "Method",
-})
+def _normalize_name(name: str | None) -> str:
+    """Aggressively normalise entity names for ID generation.
 
-
-def _is_article_scoped(entity_type: str) -> bool:
-    """Return True if the entity type is article-scoped (PMID-dependent)."""
-    return entity_type in _ARTICLE_SCOPED_TYPES
-
-
-def _normalize_name(name: str) -> str:
-    """Strip whitespace and collapse internal whitespace."""
-    return re.sub(r"\s+", " ", name.strip())
+    Lowercase, replace hyphens and underscores with spaces, collapse all
+    whitespace.  This ensures ``"Microbe-derived antioxidants"`` and
+    ``"microbe derived antioxidants"`` hash to the same global ID.
+    """
+    if not name:
+        return ""
+    normalized = name.strip().lower()
+    normalized = re.sub(r"[-_]", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -82,63 +70,68 @@ def _normalize_name(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def entity_global_id(entity_type: str, primary_text: str, article_pmid: str | None = None) -> str:
+def entity_global_id(
+    entity_type: str,
+    primary_text: str,
+    article_pmid: str | None = None,
+    *,
+    global_types: frozenset[str] | set[str] | None = None,
+) -> str:
     """Generate a deterministic global ID for an entity.
 
-    Article-scoped types (Result, Experiment, Intervention, Swine, Swine_Model,
-    Control_Group, Literature) include the PMID in the hash so that the same
-    text from different articles produces different IDs.
-
-    Global types (Alternative, Alternative_Class, Composite_Product, Tissue_Site,
-    Indicator, Method) produce the same ID regardless of PMID — the same name
-    always maps to the same node.
+    When *entity_type* is in *global_types*, the ID is based solely on the
+    entity type and name (shared across articles).  Otherwise the PMID is
+    included, making the ID article-specific.
 
     Parameters
     ----------
-    entity_type : str
+    entity_type:
         The entity class name (e.g. ``"Alternative"``, ``"Result"``).
-    primary_text : str
+    primary_text:
         The primary identifying text (name) of the entity.
-    article_pmid : str or None
-        PMID of the article.  Required for article-scoped types, ignored for
+    article_pmid:
+        PMID of the article.  Required for non-global types, ignored for
         global types.
+    global_types:
+        Set of entity type names that are shared across articles (deduplicated
+        by name).  When ``None``, all types are article-scoped (include PMID).
 
     Returns
     -------
     str
         Global ID like ``"alte_a1b2c3d4e5f6"``.
     """
-    norm_name = _normalize_name(primary_text).lower()
+    norm_name = _normalize_name(primary_text)
 
-    if _is_article_scoped(entity_type):
+    if global_types and entity_type in global_types:
+        key = f"{entity_type}:{norm_name}"
+    else:
         pmid = article_pmid or ""
         key = f"{entity_type}:{norm_name}:{pmid}"
-    else:
-        key = f"{entity_type}:{norm_name}"
 
     h = hashlib.sha256(key.encode()).hexdigest()[:12]
     prefix = entity_type.lower()[:4]
     return f"{prefix}_{h}"
 
 
-def _build_node_key(node: GraphNode) -> str:
-    """Return a comparable key for deduplication purposes."""
-    return node.id
-
-
 def build_graph(
     results: list[DocumentExtractionResult],
     registry: Any = None,
+    *,
+    global_types: frozenset[str] | set[str] | None = None,
 ) -> Graph:
     """Build a deduplicated Graph from a list of article extraction results.
 
     Parameters
     ----------
-    results : list[DocumentExtractionResult]
+    results:
         Extraction results from one or more articles.
-    registry : SchemaRegistry or None
-        Schema registry for reference/inline-relation metadata.  When ``None``
-        edge resolution is skipped.
+    registry:
+        SchemaRegistry or None.  When ``None`` edge resolution is skipped.
+    global_types:
+        Set of entity type names that should be deduplicated across articles
+        (i.e. the same name always maps to the same node).  Types not in this
+        set are scoped to their source article.
 
     Returns
     -------
@@ -154,15 +147,32 @@ def build_graph(
 
         for ext in article_result.extractions:
             entity_type = ext.extraction_class
-            primary_text = ext.extraction_text
-            if not primary_text:
+            if not ext.extraction_text:
                 continue
 
-            node_id = entity_global_id(entity_type, primary_text, pmid)
+            # Use the entity definition's primary_text field as the identity
+            # key, falling back to extraction_text.  This ensures e.g. that an
+            # Alternative extracted as {"Alternative": "MA"} with
+            # standard_name="microbe-derived antioxidants" gets the same
+            # global ID as one extracted with the canonical name.
+            identity_key = ext.extraction_text
+            if registry is not None:
+                try:
+                    ed = registry.entity_def(entity_type)
+                    if ed.primary_text and ext.attributes:
+                        identity_key = ext.attributes.get(
+                            ed.primary_text, ext.extraction_text
+                        )
+                except (KeyError, AttributeError):
+                    pass
+
+            node_id = entity_global_id(
+                entity_type, identity_key, pmid, global_types=global_types
+            )
 
             # Build properties from extraction attributes
             properties: dict[str, Any] = {
-                "name": primary_text,
+                "name": ext.extraction_text,
                 "entity_type": entity_type,
             }
             if ext.attributes:
@@ -189,11 +199,181 @@ def build_graph(
                     source_pmids=[pmid] if pmid else [],
                 )
 
+    # Post-processing: create Alternative_Class nodes from Alternative
+    # classification values, with belongs_to edges.
+    _create_alternative_class_nodes(nodes_by_id, edges, global_types)
+
+    # Post-dedup: for global entity types, merge nodes whose extraction_text
+    # matches another node's abbreviation or standard_name (handles the case
+    # where the LLM uses the abbreviation as primary text in one chunk and the
+    # full name in another).  Returns a remap dict so edges can be updated.
+    node_remap: dict[str, str] = {}
+    if global_types:
+        node_remap = _deduplicate_global_nodes(nodes_by_id, global_types)
+
     # Second pass: resolve edges via registry definitions
     if registry is not None:
-        _resolve_edges(results, nodes_by_id, edges, registry)
+        _resolve_edges(results, nodes_by_id, edges, registry, global_types, node_remap)
+
+    # After edge resolution, remap edge source/target IDs for merged nodes
+    # and remove duplicate edges that result from node merges.
+    if node_remap:
+        _remap_edges_after_dedup(edges, node_remap)
 
     return Graph(nodes=list(nodes_by_id.values()), edges=edges)
+
+
+def _create_alternative_class_nodes(
+    nodes_by_id: dict[str, GraphNode],
+    edges: list[GraphEdge],
+    global_types: frozenset[str] | set[str] | None = None,
+) -> None:
+    """Create Alternative_Class nodes from classification values on Alternative entities.
+
+    Reads the ``classification`` field from each Alternative node, creates one
+    Alternative_Class node per unique classification value, and adds
+    ``belongs_to`` edges from each Alternative to its Alternative_Class.
+    """
+    class_set: dict[str, str] = {}  # classification value → class_node_id
+
+    for node_id, node in list(nodes_by_id.items()):
+        if node.properties.get("entity_type") != "Alternative":
+            continue
+        classification = node.properties.get("classification")
+        if not classification or not isinstance(classification, str) or not classification.strip():
+            continue
+        class_name = classification.strip()
+
+        if class_name not in class_set:
+            # Create the Alternative_Class node (global, same ID for same class_name)
+            class_node_id = entity_global_id(
+                "Alternative_Class", class_name, None, global_types=global_types
+            )
+            class_set[class_name] = class_node_id
+
+            class_node = GraphNode(
+                id=class_node_id,
+                labels=["Alternative_Class", "Entity"],
+                properties={
+                    "name": class_name,
+                    "entity_type": "Alternative_Class",
+                    "class_name": class_name,
+                },
+                source_pmids=[],
+            )
+            # Merge source_pmids if node already exists
+            if class_node_id in nodes_by_id:
+                existing = nodes_by_id[class_node_id]
+                for pmid in node.source_pmids:
+                    if pmid not in existing.source_pmids:
+                        existing.source_pmids.append(pmid)
+                if "class_name" not in existing.properties:
+                    existing.properties["class_name"] = class_name
+            else:
+                nodes_by_id[class_node_id] = class_node
+
+        # Collect PMIDs for the Alternative_Class node
+        class_node_id = class_set[class_name]
+        if class_node_id in nodes_by_id:
+            for pmid in node.source_pmids:
+                if pmid not in nodes_by_id[class_node_id].source_pmids:
+                    nodes_by_id[class_node_id].source_pmids.append(pmid)
+
+        # Add belongs_to edge from Alternative → Alternative_Class
+        _add_edge(edges, node_id, class_node_id, "belongs_to", "", None)
+
+
+def _deduplicate_global_nodes(
+    nodes_by_id: dict[str, GraphNode],
+    global_types: frozenset[str] | set[str],
+) -> dict[str, str]:
+    """Merge global-scope nodes that refer to the same real-world entity.
+
+    Handles the case where the LLM uses an abbreviation (e.g. ``"MA"``) as the
+    primary text in one chunk and the full name (``"microbe-derived
+    antioxidants"``) in another.  When node A's ``extraction_text`` matches
+    node B's ``abbreviation`` or ``standard_name``, node A is merged into
+    node B.
+
+    Returns a ``{child_id: parent_id}`` map for downstream edge remapping.
+    """
+    merges: dict[str, str] = {}  # child_node_id → parent_node_id
+
+    for node_id, node in list(nodes_by_id.items()):
+        entity_type = node.properties.get("entity_type", "")
+        if entity_type not in global_types:
+            continue
+
+        node_name = _normalize_name(node.properties.get("name", ""))
+        if not node_name:
+            continue
+
+        for other_id, other in nodes_by_id.items():
+            if other_id == node_id:
+                continue
+            other_abbrev = _normalize_name(other.properties.get("abbreviation") or "")
+            other_std = _normalize_name(other.properties.get("standard_name") or "")
+
+            if (other_abbrev and other_abbrev == node_name) or \
+               (other_std and other_std == node_name):
+                merges[node_id] = other_id
+                break
+
+    # Apply merges
+    for child_id, parent_id in merges.items():
+        if child_id not in nodes_by_id or parent_id not in nodes_by_id:
+            continue
+        child = nodes_by_id[child_id]
+        parent = nodes_by_id[parent_id]
+
+        for pmid in child.source_pmids:
+            if pmid not in parent.source_pmids:
+                parent.source_pmids.append(pmid)
+        for k, v in child.properties.items():
+            if k not in parent.properties:
+                parent.properties[k] = v
+        del nodes_by_id[child_id]
+
+    return merges
+
+
+def _remap_edges_after_dedup(
+    edges: list[GraphEdge],
+    node_remap: dict[str, str],
+) -> None:
+    """Apply node-ID remapping after dedup and remove duplicate edges.
+
+    After merging nodes, edges may reference old (deleted) node IDs.
+    This remaps them to the surviving parent IDs and deduplicates edges
+    that now share the same (source, target, type) triple.
+    """
+    # Remap source/target IDs
+    for e in edges:
+        if e.source_id in node_remap:
+            e.source_id = node_remap[e.source_id]
+        if e.target_id in node_remap:
+            e.target_id = node_remap[e.target_id]
+        # Drop self-edges that may result from merging
+        if e.source_id == e.target_id:
+            e.source_id = ""  # mark for removal
+
+    # Remove self-edges (marked with empty source_id)
+    edges[:] = [e for e in edges if e.source_id]
+
+    # Deduplicate edges with the same (source, target, type) triple
+    seen: dict[tuple[str, str, str], GraphEdge] = {}
+    deduped: list[GraphEdge] = []
+    for e in edges:
+        key = (e.source_id, e.target_id, e.type)
+        if key in seen:
+            existing = seen[key]
+            for pmid in e.source_pmids:
+                if pmid not in existing.source_pmids:
+                    existing.source_pmids.append(pmid)
+        else:
+            seen[key] = e
+            deduped.append(e)
+    edges[:] = deduped
 
 
 def _resolve_edges(
@@ -201,15 +381,22 @@ def _resolve_edges(
     nodes_by_id: dict[str, GraphNode],
     edges: list[GraphEdge],
     registry: Any,
+    global_types: frozenset[str] | set[str] | None = None,
+    node_remap: dict[str, str] | None = None,
 ) -> None:
-    """Resolve edges from inline relations and reference fields."""
+    """Resolve edges from inline relations and reference fields.
+
+    Accepts *node_remap* to correct edge source/target IDs when nodes have
+    been merged by the post-dedup step.
+    """
+    remap = node_remap or {}
+
     for article_result in results:
         pmid = article_result.document_id
 
         for ext in article_result.extractions:
             entity_type = ext.extraction_class
-            primary_text = ext.extraction_text
-            if not primary_text:
+            if not ext.extraction_text:
                 continue
 
             try:
@@ -217,7 +404,18 @@ def _resolve_edges(
             except (KeyError, AttributeError):
                 continue
 
-            source_id = entity_global_id(entity_type, primary_text, pmid)
+            # Use primary_text field from entity definition as identity key
+            identity_key = ext.extraction_text
+            if entity_def.primary_text and ext.attributes:
+                identity_key = ext.attributes.get(
+                    entity_def.primary_text, ext.extraction_text
+                )
+
+            source_id = entity_global_id(
+                entity_type, identity_key, pmid, global_types=global_types
+            )
+            # Apply node remap if this ID was merged away
+            source_id = remap.get(source_id, source_id)
 
             # --- Resolve reference fields ---
             for ref in entity_def.references:
@@ -225,8 +423,11 @@ def _resolve_edges(
                 if ref_value is None:
                     continue
 
-                target_id = entity_global_id(ref.target_entity, str(ref_value), pmid)
-                _add_edge(edges, source_id, target_id, ref.edge_type, pmid, ext.attributes)
+                target_id = entity_global_id(
+                    ref.target_entity, str(ref_value), pmid, global_types=global_types
+                )
+                target_id = remap.get(target_id, target_id)
+                _add_edge(edges, source_id, target_id, ref.edge_type, pmid, ext)
 
             # --- Resolve inline relations ---
             for ir in entity_def.inline_relations:
@@ -241,8 +442,11 @@ def _resolve_edges(
                     if not ir_val:
                         continue
                     for target_type in ir.target:
-                        target_id = entity_global_id(target_type, str(ir_val), pmid)
-                        _add_edge(edges, source_id, target_id, ir.name, pmid, ext.attributes)
+                        target_id = entity_global_id(
+                            target_type, str(ir_val), pmid, global_types=global_types
+                        )
+                        target_id = remap.get(target_id, target_id)
+                        _add_edge(edges, source_id, target_id, ir.name, pmid, ext)
 
 
 def _get_attr(attributes: dict[str, Any] | None, key: str) -> Any:
@@ -258,7 +462,7 @@ def _add_edge(
     target_id: str,
     edge_type: str,
     pmid: str,
-    attrs: dict[str, Any] | None,
+    extraction: Any,
 ) -> None:
     """Add an edge if source and target are different, deduplicating by (source, target, type)."""
     if source_id == target_id:
@@ -271,13 +475,11 @@ def _add_edge(
                 e.source_pmids.append(pmid)
             return
 
-    evidence_text = None
-    if attrs:
-        evidence_text = attrs.get("evidence_text")
-
     props: dict[str, Any] = {}
-    if evidence_text:
-        props["evidence_text"] = evidence_text
+    # evidence_text is now on the Extraction directly (not in attributes)
+    ev = getattr(extraction, "evidence_text", "") if extraction else ""
+    if ev:
+        props["evidence_text"] = ev
 
     edges.append(GraphEdge(
         source_id=source_id,
@@ -288,32 +490,26 @@ def _add_edge(
     ))
 
 
+# ---------------------------------------------------------------------------
+# Neo4j CSV export
+# ---------------------------------------------------------------------------
+
+
 def export_neo4j_csv(graph: Graph, output_dir: str | Path) -> None:
     """Export a Graph to Neo4j-compatible CSV files.
 
     Writes ``nodes.csv`` and ``edges.csv`` into *output_dir*, creating the
     directory if it does not exist.
-
-    Parameters
-    ----------
-    graph : Graph
-        The graph to export.
-    output_dir : str or Path
-        Directory to write CSV files into.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- Nodes CSV ---
     _write_nodes_csv(graph, output_dir / "nodes.csv")
-
-    # --- Edges CSV ---
     _write_edges_csv(graph, output_dir / "edges.csv")
 
 
 def _write_nodes_csv(graph: Graph, path: Path) -> None:
     """Write nodes.csv with Neo4j-compatible headers."""
-    # Collect all property names across all nodes
     all_props: set[str] = set()
     for node in graph.nodes:
         all_props.update(node.properties.keys())
@@ -335,7 +531,6 @@ def _write_nodes_csv(graph: Graph, path: Path) -> None:
 
 def _write_edges_csv(graph: Graph, path: Path) -> None:
     """Write edges.csv with Neo4j-compatible headers."""
-    # Collect all property names across all edges
     all_props: set[str] = set()
     for edge in graph.edges:
         all_props.update(edge.properties.keys())
