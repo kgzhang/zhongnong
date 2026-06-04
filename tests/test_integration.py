@@ -17,7 +17,7 @@ class TestSchemaRegistryLoads:
         assert "Result" in names
         assert "Indicator" in names
         assert "Intervention" in names
-        assert len(names) >= 11
+        assert len(names) >= 12
 
     def test_all_phases_load(self):
         """Verify extraction phases are defined (backward-compat, phases unused in core pipeline)."""
@@ -142,9 +142,8 @@ class TestEndToEndPipeline:
                     "standard_name": "thymol", "abbreviation": "THY",
                     "original_text": "thymol (THY, purity >= 99%)",
                 }},
-                {"Alternative": "Product X", "Alternative_attributes": {
-                    "standard_name": "Product X", "is_composite": True, "is_commercial": True,
-                    "product_name": "Product X",
+                {"Composite_Product": "Product X", "Composite_Product_attributes": {
+                    "product_name": "Product X", "is_commercial": True,
                     "components": [{"standard_name": "thymol", "entity_type": "Alternative"}],
                 }},
                 {"Intervention": "thymol", "Intervention_attributes": {

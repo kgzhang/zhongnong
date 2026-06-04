@@ -1,0 +1,94 @@
+relations:
+  belongs_to:
+    description: "物质属于某个一级分类"
+    source: Alternative
+    target: Alternative_Class
+    cardinality: many_to_one
+  has_component:
+    description: "复合产品包含某个组分"
+    source: Composite_Product
+    target: [Alternative, Composite_Product]
+    cardinality: one_to_many
+    co_extracted: true
+  contains:
+    source: Literature
+    target: Experiment
+    cardinality: one_to_many
+  uses_animal:
+    source: Experiment
+    target: Swine
+    cardinality: many_to_one
+  has_intervention:
+    source: Experiment
+    target: Intervention
+    cardinality: one_to_many
+  measures_indicator:
+    source: Experiment
+    target: Indicator
+    cardinality: one_to_many
+  uses_control:
+    source: Experiment
+    target: Control_Group
+    cardinality: one_to_many
+  uses:
+    source: Intervention
+    target: [Alternative, Composite_Product]
+    cardinality: many_to_one
+  measured_in:
+    source: Indicator
+    target: Tissue_Site
+    cardinality: many_to_one
+    co_extracted: true
+  uses_method:
+    source: Indicator
+    target: Method
+    cardinality: many_to_one
+    co_extracted: true
+  increases:
+    source: Intervention
+    target: Result
+    description: "导致指标数值或活性升高"
+  decreases:
+    source: Intervention
+    target: Result
+    description: "导致指标数值或活性降低"
+  upregulates:
+    source: Intervention
+    target: Result
+    description: "导致基因或蛋白表达上调"
+  downregulates:
+    source: Intervention
+    target: Result
+    description: "导致基因或蛋白表达下调"
+  enriches:
+    source: Intervention
+    target: Result
+    description: "导致微生物丰度增加"
+  depletes:
+    source: Intervention
+    target: Result
+    description: "导致微生物丰度减少"
+  corresponds_to:
+    source: Result
+    target: Indicator
+    co_extracted: true
+  occurs_in:
+    source: Result
+    target: Tissue_Site
+    co_extracted: true
+  compared_to:
+    source: Result
+    target: Control_Group
+    co_extracted: true
+  has_synonym:
+    source: Alternative
+    target: Alternative
+  leads_to:
+    source: Indicator
+    target: Indicator
+  correlates_with:
+    source: Indicator
+    target: Indicator
+  part_of:
+    source: Indicator
+    target: Indicator

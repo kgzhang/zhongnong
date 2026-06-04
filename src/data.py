@@ -39,7 +39,7 @@ class Extraction:
     """Represents an extraction from text.
 
     Attributes:
-        extraction_class: The entity type (e.g. "Alternative", "Indicator").
+        extraction_class: The entity type (e.g. "Chemical", "Measurement").
         extraction_text: The primary text value returned by the LLM.
         char_interval: Character position in the source document (set by alignment).
         token_interval: Token position in the source document (set by alignment).

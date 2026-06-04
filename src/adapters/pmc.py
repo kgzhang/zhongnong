@@ -16,6 +16,7 @@ quirks, section parsing, and front-matter extraction.  It lives in
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,8 @@ class PmcArticleMeta:
     journal: str = ""
     abstract_text: str = ""
     body_text: str = ""
+    publication_year: str = ""
+    publication_date: str = ""
     sections: dict[str, str] = field(default_factory=dict)
     parse_warnings: list[str] = field(default_factory=list)
 
@@ -96,6 +99,7 @@ def parse_article(xml_path: str | Path) -> PmcArticleMeta:
             _parse_title(front, nsmap, meta)
             _parse_journal(front, nsmap, meta)
             _parse_abstract(front, nsmap, meta)
+            _parse_pub_date(front, nsmap, meta)
 
         # ---- Body ----
         body = root.find(".//body", nsmap)
@@ -136,7 +140,8 @@ def literature_pre_extractor(meta: PmcArticleMeta):
     """Return a pre-extractor callable for Literature entities.
 
     The returned callable creates a Literature Extraction from the PMC
-    front-matter (DOI, PMID, title, journal) — NOT from the LLM.
+    front-matter (DOI, PMID, title, journal, publication dates,
+    abstract conclusion) — NOT from the LLM.
 
     Usage::
 
@@ -150,6 +155,10 @@ def literature_pre_extractor(meta: PmcArticleMeta):
             "pmid": meta.pmid,
             "title": meta.title,
             "journal": meta.journal,
+            "publication_year": int(meta.publication_year) if meta.publication_year else "",
+            "publication_date": meta.publication_date,
+            "abstract_conclusion": _extract_conclusion(meta.abstract_text) if meta.abstract_text else "",
+            "study_design": "Not reported",
         }
         if not attrs["title"] and not attrs["doi"]:
             return []
@@ -302,10 +311,145 @@ def export_entity_review_csv(
                      if not isinstance(v, (list, dict))}),
             ])
 
+    # Write relationships CSV for manual validation
+    _write_relationships_csv(out, all_exts, registry)
+
     print(f"Review CSVs exported to {out}/")
     for etype in sorted(by_type.keys()):
         count = len(by_type[etype])
         print(f"  {etype}.csv: {count} entities")
+
+
+def _normalize_key(text: str) -> str:
+    """Normalize for fuzzy lookup: lowercase, strip parens/punctuation, collapse spaces."""
+    t = text.strip().lower()
+    t = re.sub(r'\s*\([^)]*\)', '', t)  # strip parentheticals
+    t = re.sub(r'[^\w\s]', '', t)        # strip punctuation
+    t = re.sub(r'\s+', ' ', t)            # collapse spaces
+    return t.strip()
+
+
+def _write_relationships_csv(
+    out_dir: Path,
+    all_exts: list[tuple[str, Any]],
+    registry: Any = None,
+) -> None:
+    """Write relationships.csv with all cross-entity edges for manual validation.
+
+    Derives edges from:
+    - Entity definition ``references`` (e.g., Result → Indicator)
+    - Entity definition ``inline_relations`` (e.g., Composite_Product → Alternative)
+    - Attribute-based references (e.g., Indicator.measurement_method → Method)
+    """
+    import csv as _csv
+
+    path = out_dir / "relationships.csv"
+    rows: list[dict] = []
+
+    # Build lookup: (entity_type, field_value) → canonical extraction
+    lookup: dict[tuple[str, str], Any] = {}
+    normalized_lookup: dict[tuple[str, str], Any] = {}  # stripped punctuation
+    for doc_id, ext in all_exts:
+        key = (ext.extraction_class, ext.extraction_text.strip().lower())
+        lookup[key] = ext
+        # Normalized: strip parens, punctuation, collapse spaces
+        norm = _normalize_key(ext.extraction_text)
+        normalized_lookup[(ext.extraction_class, norm)] = ext
+        # Also by primary_text attribute
+        if registry:
+            try:
+                ed = registry.entity_def(ext.extraction_class)
+                pt_val = (ext.attributes or {}).get(ed.primary_text, "")
+                if pt_val:
+                    lookup[(ext.extraction_class, str(pt_val).strip().lower())] = ext
+                    normalized_lookup[(ext.extraction_class, _normalize_key(pt_val))] = ext
+            except (KeyError, AttributeError):
+                pass
+
+    def _fuzzy_find(etype: str, target_text: str) -> bool:
+        """Try exact, normalized, substring, and word-overlap matching."""
+        t = target_text.strip().lower()
+        tn = _normalize_key(target_text)
+        # Exact
+        if (etype, t) in lookup or (etype, tn) in normalized_lookup:
+            return True
+        # Substring
+        for (et, k), _ in lookup.items():
+            if et == etype and (t in k or k in t):
+                return True
+        # Word overlap ≥ 2
+        t_words = set(w for w in re.split(r'[\s_\-]+', tn) if len(w) > 2)
+        if len(t_words) >= 2:
+            for (et, k), _ in lookup.items():
+                if et == etype:
+                    k_words = set(w for w in re.split(r'[\s_\-]+', k) if len(w) > 2)
+                    if len(t_words & k_words) >= 2:
+                        return True
+        return False
+
+    for doc_id, ext in all_exts:
+        attrs = ext.attributes or {}
+        etype = ext.extraction_class
+
+        # Resolve edges from entity definition
+        if registry:
+            try:
+                ed = registry.entity_def(etype)
+
+                # From references
+                for ref in ed.references:
+                    val = attrs.get(ref.name)
+                    if val and isinstance(val, str) and val.strip():
+                        found = _fuzzy_find(ref.target_entity, val.strip())
+                        rows.append({
+                            "source_doc": doc_id,
+                            "source_type": etype,
+                            "source_text": ext.extraction_text,
+                            "relation": ref.edge_type,
+                            "target_type": ref.target_entity,
+                            "target_text": val.strip(),
+                            "target_found": "yes" if found else "no",
+                        })
+
+                # From inline_relations
+                for ir in ed.inline_relations:
+                    vals = attrs.get(ir.via_field)
+                    if not vals:
+                        continue
+                    if not isinstance(vals, list):
+                        vals = [vals]
+                    for v in vals:
+                        if not v:
+                            continue
+                        if isinstance(v, dict):
+                            target_name = v.get("standard_name", str(v))
+                        else:
+                            target_name = str(v)
+                        for target_type in ir.target:
+                            found = _fuzzy_find(target_type, target_name.strip())
+                            rows.append({
+                                "source_doc": doc_id,
+                                "source_type": etype,
+                                "source_text": ext.extraction_text,
+                                "relation": ir.name,
+                                "target_type": target_type,
+                                "target_text": target_name.strip(),
+                                "target_found": "yes" if found else "no",
+                            })
+
+            except (KeyError, AttributeError):
+                pass
+
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        writer = _csv.DictWriter(fh, fieldnames=[
+            "source_doc", "source_type", "source_text",
+            "relation", "target_type", "target_text", "target_found",
+        ])
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+    print(f"  relationships.csv: {len(rows)} edges")
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +507,49 @@ def _parse_abstract(front, nsmap, meta: PmcArticleMeta) -> None:
         meta.abstract_text = "".join(el.itertext()).strip()
 
 
+def _parse_pub_date(front, nsmap, meta: PmcArticleMeta) -> None:
+    """Extract publication date from front matter.
+
+    Prefers epub date over collection date.  Stores both a structured
+    ``publication_date`` (YYYY-MM-DD when available) and a
+    ``publication_year``.
+    """
+    pub_dates = front.findall(".//pub-date", nsmap)
+    if not pub_dates:
+        return
+
+    # Prefer epub, then pmc-release, then collection, then first available
+    priority = {"epub": 0, "ppub": 0, "pmc-release": 1, "collection": 2}
+    best: Any = None
+    best_prio = 999
+    for pd_el in pub_dates:
+        ptype = (pd_el.get("pub-type") or "").strip()
+        prio = priority.get(ptype, 3)
+        if prio < best_prio:
+            best_prio = prio
+            best = pd_el
+
+    if best is None:
+        return
+
+    year_el = best.find("./year", nsmap)
+    month_el = best.find("./month", nsmap)
+    day_el = best.find("./day", nsmap)
+
+    year = (year_el.text or "").strip() if year_el is not None else ""
+    month = (month_el.text or "").strip() if month_el is not None else ""
+    day = (day_el.text or "").strip() if day_el is not None else ""
+
+    if year:
+        meta.publication_year = year
+    if year and month and day:
+        meta.publication_date = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+    elif year and month:
+        meta.publication_date = f"{year}-{month.zfill(2)}"
+    elif year:
+        meta.publication_date = year
+
+
 def _parse_sections(body, nsmap, meta: PmcArticleMeta) -> None:
     """Parse body sections by semantic type (introduction, methods, etc.)."""
     sections = body.findall(".//sec", nsmap)
@@ -399,3 +586,33 @@ def _serialize_meta(meta: PmcArticleMeta) -> str:
         "title": meta.title,
         "journal": meta.journal,
     }, ensure_ascii=False)
+
+
+def _extract_conclusion(abstract_text: str) -> str:
+    """Extract the conclusion sentence(s) from an abstract.
+
+    Looks for sentences starting with conclusion-signalling phrases in the
+    last 1-3 sentences.  Falls back to the last sentence.
+    """
+    import re
+
+    conclusion_markers = [
+        "in conclusion", "these results suggest", "these results indicate",
+        "these findings suggest", "overall", "therefore", "in summary",
+        "collectively", "taken together", "our results demonstrate",
+        "our findings demonstrate", "this study demonstrates",
+        "the present study demonstrates",
+    ]
+    sentences = re.split(r"(?<=[.!?])\s+", abstract_text.strip())
+    if not sentences:
+        return ""
+
+    # Search last 3 sentences for conclusion markers
+    for sent in reversed(sentences[-3:]):
+        sent_lower = sent.strip().lower()
+        for marker in conclusion_markers:
+            if sent_lower.startswith(marker):
+                return sent.strip()
+
+    # Fallback: last sentence
+    return sentences[-1].strip()

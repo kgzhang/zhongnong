@@ -35,6 +35,20 @@ logger = logging.getLogger(__name__)
 PreExtractor = Callable[[Document], list[Extraction]]
 
 
+def _has_any_llm_field(registry, entity_name: str) -> bool:
+    """Return True if *entity_name* has at least one attribute with source='llm'.
+
+    Entities that have ONLY structure/align/post source attributes (e.g. entities
+    derived entirely from pre-extractors or post-processing) are excluded from
+    LLM extraction.
+    """
+    try:
+        ed = registry.entity_def(entity_name)
+        return any(a.source == "llm" for a in ed.attributes)
+    except (KeyError, AttributeError):
+        return True  # If unknown, include it (fail open).
+
+
 @dataclass
 class DocumentExtractionResult:
     """Extraction result for one document — format-agnostic."""
@@ -138,15 +152,16 @@ def extract(
     fh = FormatHandler(use_fences=model.requires_fence_output)
 
     # Build prompt from entity definitions.
-    # Exclude "Literature" — it is derived from pre-extractors / document
-    # metadata (filename, front-matter) and should never be sent to the LLM.
+    # Exclude entities that have ONLY structure/align/post source attributes
+    # (no LLM-source attributes) — they are derived from pre-extractors or
+    # post-processing and should never be sent to the LLM.
     # When *entity_names* is provided explicitly (e.g. section-based extraction),
     # use that list instead.
     if entity_names is not None:
-        llm_entity_names = [n for n in entity_names if n != "Literature"]
+        llm_entity_names = [n for n in entity_names if _has_any_llm_field(registry, n)]
     else:
         llm_entity_names = [
-            n for n in registry.all_entity_names() if n != "Literature"
+            n for n in registry.all_entity_names() if _has_any_llm_field(registry, n)
         ]
     prompt_text = registry.build_extraction_prompt(llm_entity_names)
 

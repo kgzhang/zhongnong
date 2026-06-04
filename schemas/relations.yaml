@@ -1,94 +1,167 @@
+# 抗生素替代物知识图谱 — 关系类型定义
+# 基于 schema.md 第2节 关系类型及使用规范
+
 relations:
+  # -----------------------------------------------------------------------
+  # 2.1 分类与归属
+  # -----------------------------------------------------------------------
   belongs_to:
     description: "物质属于某个一级分类"
     source: Alternative
     target: Alternative_Class
     cardinality: many_to_one
+
   has_component:
-    description: "复合产品包含某个组分"
-    source: Alternative
-    target: [Alternative]
+    description: "复合产品包含某个组分（支持嵌套复合）"
+    source: Composite_Product
+    target: [Alternative, Composite_Product]
     cardinality: one_to_many
     co_extracted: true
+
+  # -----------------------------------------------------------------------
+  # 2.2 文献与试验设计
+  # -----------------------------------------------------------------------
   contains:
+    description: "文献包含试验"
     source: Literature
     target: Experiment
     cardinality: one_to_many
+
+  uses_model:
+    description: "试验使用某个动物模型（一次试验可关联多个模型）"
+    source: Experiment
+    target: Swine_Model
+    cardinality: many_to_many
+
   uses_animal:
+    description: "试验使用某种动物参数"
     source: Experiment
     target: Swine
     cardinality: many_to_one
+
   has_intervention:
+    description: "试验包含干预措施"
     source: Experiment
     target: Intervention
     cardinality: one_to_many
+
   measures_indicator:
+    description: "试验测量了某个指标"
     source: Experiment
     target: Indicator
     cardinality: one_to_many
+
   uses_control:
+    description: "试验使用对照组"
     source: Experiment
     target: Control_Group
     cardinality: one_to_many
-  uses:
+
+  applied_to:
+    description: "干预施加于某个动物模型（支持一对多）"
     source: Intervention
-    target: [Alternative]
+    target: Swine_Model
+    cardinality: many_to_many
+
+  uses:
+    description: "干预使用的替代物物质（单一或复合）。仅用于替代物，不得用于阳性抗生素对照"
+    source: Intervention
+    target: [Alternative, Composite_Product]
     cardinality: many_to_one
+
+  # -----------------------------------------------------------------------
+  # 2.3 指标与组织/方法
+  # -----------------------------------------------------------------------
   measured_in:
+    description: "指标在某个组织部位测定（宏观指标指向 Whole body）"
     source: Indicator
     target: Tissue_Site
     cardinality: many_to_one
-    co_extracted: true
+
   uses_method:
+    description: "指标使用某种测定方法"
     source: Indicator
     target: Method
-    cardinality: many_to_one
-    co_extracted: true
+    cardinality: many_to_many
+
+  # -----------------------------------------------------------------------
+  # 2.4 结果关系（方向性关系）
+  # -----------------------------------------------------------------------
   increases:
+    description: "干预导致连续数值型指标升高（生长性能、代谢物浓度、血清生化等）"
     source: Intervention
     target: Result
-    description: "导致指标数值或活性升高"
+
   decreases:
+    description: "干预导致连续数值型指标降低（生长性能、代谢物浓度、腹泻率改善等）"
     source: Intervention
     target: Result
-    description: "导致指标数值或活性降低"
+
   upregulates:
+    description: "干预导致基因或蛋白表达上调"
     source: Intervention
     target: Result
-    description: "导致基因或蛋白表达上调"
+
   downregulates:
+    description: "干预导致基因或蛋白表达下调"
     source: Intervention
     target: Result
-    description: "导致基因或蛋白表达下调"
+
   enriches:
+    description: "干预导致微生物相对丰度增加"
     source: Intervention
     target: Result
-    description: "导致微生物丰度增加"
+
   depletes:
+    description: "干预导致微生物相对丰度减少"
     source: Intervention
     target: Result
-    description: "导致微生物丰度减少"
+
+  affects:
+    description: "兜底关系：无法明确归类或无显著变化的结果统一使用此关系"
+    source: Intervention
+    target: Result
+
+  # -----------------------------------------------------------------------
+  # 其他结果关系
+  # -----------------------------------------------------------------------
   corresponds_to:
+    description: "结果对应某个指标"
     source: Result
     target: Indicator
     co_extracted: true
+
   occurs_in:
+    description: "结果发生在某个组织部位"
     source: Result
     target: Tissue_Site
     co_extracted: true
+
   compared_to:
+    description: "结果与某个对照组比较（仅抽取与对照组的比较）"
     source: Result
     target: Control_Group
     co_extracted: true
+
+  # -----------------------------------------------------------------------
+  # 2.5 其他关系
+  # -----------------------------------------------------------------------
   has_synonym:
+    description: "同义关系（同一物质的不同命名）"
     source: Alternative
     target: Alternative
+
   leads_to:
+    description: "因果通路（如某菌属丰度 → SCFA 浓度）"
     source: Indicator
     target: Indicator
+
   correlates_with:
+    description: "统计相关"
     source: Indicator
     target: Indicator
+
   part_of:
+    description: "层级从属（如丁酸 → SCFAs）"
     source: Indicator
     target: Indicator

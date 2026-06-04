@@ -419,6 +419,21 @@ class Annotator:
             doc = doc_map.get(doc_id)
             text = doc.text if doc else ""
             extractions = per_doc.pop(doc_id, [])
+
+            # 7.5 Validate and clean (non-sectioned pipeline path)
+            try:
+                from src.validation import (
+                    validate_mutual_exclusivity,
+                    clean_synthetic_names,
+                )
+                extractions = clean_synthetic_names(extractions)
+                # Only mutual exclusivity if registry is stored on the instance
+                # (settable by callers that have it)
+                if hasattr(self, "_registry") and self._registry is not None:
+                    extractions = validate_mutual_exclusivity(extractions, self._registry)
+            except ImportError:
+                pass
+
             yield AnnotatedDocument(
                 extractions=extractions,
                 text=text,

@@ -16,7 +16,7 @@ class TestSchemaRegistry:
         assert "Alternative" in names
         assert "Alternative_Class" in names
         assert "Result" in names
-        assert len(names) >= 11
+        assert len(names) >= 12
 
     def test_entity_def(self):
         ed = self.registry.entity_def("Alternative")

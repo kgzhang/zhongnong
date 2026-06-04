@@ -492,6 +492,53 @@ class SchemaRegistry:
             )
         field_list = "\n".join(field_list_parts)
 
+        # --- Build dynamic generics ---
+        # Reference rules: which entity types reference which others
+        ref_rules: list[str] = []
+        exclusivity_rules: list[str] = []
+        for ename in entity_names:
+            try:
+                ed = self.entity_def(ename)
+            except (KeyError, AttributeError):
+                continue
+            # Build reference rules from entity definition
+            if ed.references:
+                ref_names = ", ".join(
+                    f"{r.name} -> {r.target_entity}" for r in ed.references
+                )
+                ref_rules.append(f"  {ename} entities reference: {ref_names}")
+            # Build exclusivity rules from entity notes
+            if ed.notes:
+                import re as _re
+                for line in ed.notes.splitlines():
+                    m = _re.match(
+                        r"^\s*mutually_exclusive_with\s*:\s*(.+)$",
+                        line.strip(), _re.IGNORECASE,
+                    )
+                    if m:
+                        ex_types = [t.strip() for t in m.group(1).split(",") if t.strip()]
+                        ex_types.sort()
+                        ex_text = " and ".join(ex_types)
+                        exclusivity_rules.append(
+                            f"- {ename} is mutually exclusive with: {ex_text}. "
+                            f"A given item is EITHER {ex_text.split(' and ')[0]} OR "
+                            f"{ex_text.split(' and ')[-1]}, NEVER both."
+                        )
+
+        ref_section = ""
+        if ref_rules:
+            ref_section = (
+                "Entity reference relationships:\n" +
+                "\n".join(ref_rules) + "\n\n"
+            )
+
+        exclusivity_section = ""
+        if exclusivity_rules:
+            exclusivity_section = (
+                "CRITICAL EXCLUSIVITY RULES:\n" +
+                "\n".join(exclusivity_rules) + "\n\n"
+            )
+
         # Format instruction — MUST use English field names for JSON keys
         parts.append(
             f'CRITICAL: Output valid JSON with these EXACT English entity types and attribute names.\n'
@@ -500,24 +547,34 @@ class SchemaRegistry:
             f'JSON format: {{"extractions": [{{"EntityType": "primary_value", "EntityType_attributes": {{"field_name": value, ...}}}}, ...]}}\n'
             f'ALL attribute keys MUST be in English as specified above. DO NOT translate field names to Chinese.\n'
             f'\n'
+            f'GLOBAL RULES FOR ALL ENTITIES:\n'
+            f'1. Every entity MUST have extraction_text that appears VERBATIM in the source text. Do not invent or concatenate names.\n'
+            f'2. Do NOT add parenthetical annotations to extraction_text. Put supplementary names in their dedicated attribute fields.\n'
+            f'3. Every entity must be referenced by at least one other entity (no orphans).\n'
+            f'4. Each entity type has a distinct purpose. Do not duplicate the same entity across different entity types.\n'
+            f'5. Use the EXACT values and units as written in the source text. Do NOT perform unit conversions.\n'
+            f'6. Every entity that has reference fields (see below) MUST populate them with values that match existing entities of the target type.\n'
+            f'\n'
+            f'{ref_section}'
             f'CRITICAL OUTPUT FORMAT RULES:\n'
-            f'- Use the entity type name (e.g. "Alternative") directly as the JSON key, with the primary value as its value.\n'
-            f'  Correct: {{"Alternative": "thymol", "Alternative_attributes": {{"standard_name": "thymol"}}}}\n'
-            f'  WRONG: {{"entity_type": "Alternative", "entity_value": "thymol"}}  -- do NOT use "entity_type" as a JSON key!\n'
+            f'- Use the entity type name directly as the JSON key, with the primary value as its value.\n'
+            f'  Correct: {{"EntityType": "example_value", "EntityType_attributes": {{"field_name": "value"}}}}\n'
+            f'  WRONG: {{"entity_type": "EntityType", "entity_value": "example_value"}}  -- do NOT use "entity_type" as a JSON key!\n'
             f'- The attributes key MUST be "<EntityType>_attributes" exactly, not "attributes".\n'
             f'\n'
             f'CRITICAL ENTITY DISAMBIGUATION RULES:\n'
             f'- Use the canonical full name as the primary value. Put abbreviations, acronyms, or alternate names in the abbreviation field, NOT as separate entities.\n'
-            f'- Be case-consistent. Use the same canonical name (e.g. "microbe-derived antioxidants") for the same entity throughout the document.\n'
-            f'- Hyphenated names (e.g. "microbe-derived") and non-hyphenated variants (e.g. "microbe derived") refer to the SAME entity — always use the hyphenated canonical form.\n'
+            f'- Be case-consistent. Use the same canonical name for the same entity throughout the document.\n'
+            f'- Hyphenated names and non-hyphenated variants refer to the SAME entity — always use the canonical form.\n'
             f'- If you encounter an abbreviation/acronym, expand it to the full name for the primary value and put the abbreviation in the abbreviation field.\n'
+            f'- When extracting an entity that has reference fields (references another entity), you MUST populate those reference fields with values that EXACTLY match the target entity. Use the abbreviation or standard_name from the context list provided.\n'
             f'\n'
             f'STRICT VALUE RULES:\n'
             f'- NEVER output "none", "unspecified", "unknown", "Not reported", "N/A", "na", or any similar placeholder as a value. If information is genuinely absent, use an EMPTY STRING "" instead.\n'
             f'- NEVER invent or guess values. Only extract what is explicitly stated in the text.\n'
-            f'- For Method entities: ONLY extract BIOLOGICAL EXPERIMENTAL METHODS (e.g. 16S rRNA sequencing, ELISA, gas chromatography, histological staining, biochemical assays). Do NOT extract statistical tests (T-test, ANOVA, MIXED procedure, GLM), bioinformatics analysis tools (LEfSe, PCoA, NMDS), generic actions (weighing, counting, measuring), or software names (SAS, SPSS, ImageJ) as Method entities.\n'
-            f'- Each Intervention must have a SPECIFIC substance+dose combination. A single experiment should produce DISTINCT Intervention entities for each unique treatment, not duplicate entities describing the same treatment.\n'
-            f'- For Control_Group names: use the paper\'s own group labels (e.g., \'CON\', \'Control\', \'Basal diet\'). Do NOT invent names based on doses or substances.\n'
+            f'- Report measurements using the source text\'s original units verbatim. Do not convert between units.\n'
+            f'\n'
+            f'{exclusivity_section}'
         )
 
         for ename in entity_names:

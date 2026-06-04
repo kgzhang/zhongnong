@@ -199,9 +199,10 @@ def build_graph(
                     source_pmids=[pmid] if pmid else [],
                 )
 
-    # Post-processing: create Alternative_Class nodes from Alternative
-    # classification values, with belongs_to edges.
-    _create_alternative_class_nodes(nodes_by_id, edges, global_types)
+    # Post-processing: create classification/category nodes from post-process
+    # enum fields, with belongs_to edges. Generic — driven by registry metadata.
+    if registry is not None:
+        _create_classification_nodes(nodes_by_id, edges, registry, global_types)
 
     # Post-dedup: for global entity types, merge nodes whose extraction_text
     # matches another node's abbreviation or standard_name (handles the case
@@ -223,64 +224,86 @@ def build_graph(
     return Graph(nodes=list(nodes_by_id.values()), edges=edges)
 
 
-def _create_alternative_class_nodes(
+def _create_classification_nodes(
     nodes_by_id: dict[str, GraphNode],
     edges: list[GraphEdge],
+    registry: Any,
     global_types: frozenset[str] | set[str] | None = None,
 ) -> None:
-    """Create Alternative_Class nodes from classification values on Alternative entities.
+    """Create classification/category nodes from post-process enum fields.
 
-    Reads the ``classification`` field from each Alternative node, creates one
-    Alternative_Class node per unique classification value, and adds
-    ``belongs_to`` edges from each Alternative to its Alternative_Class.
+    Generic — reads all entity definitions from the registry.  For each entity
+    type that has a ``source: post, type: enum`` attribute, creates one
+    ``<EntityType>_Class`` node per unique enum value found on that entity's
+    nodes, connected via ``belongs_to`` edges.
     """
-    class_set: dict[str, str] = {}  # classification value → class_node_id
+    # Build a map: entity_type → classification_field_name
+    try:
+        all_entity_names = registry.all_entity_names()
+    except AttributeError:
+        return
 
-    for node_id, node in list(nodes_by_id.items()):
-        if node.properties.get("entity_type") != "Alternative":
+    for ename in all_entity_names:
+        try:
+            ed = registry.entity_def(ename)
+        except (KeyError, AttributeError):
             continue
-        classification = node.properties.get("classification")
-        if not classification or not isinstance(classification, str) or not classification.strip():
+
+        # Find the first post-process enum field — this is the classification field
+        class_field: str | None = None
+        for a in ed.attributes:
+            if a.source == "post" and a.type == "enum":
+                class_field = a.name
+                break
+        if class_field is None:
             continue
-        class_name = classification.strip()
 
-        if class_name not in class_set:
-            # Create the Alternative_Class node (global, same ID for same class_name)
-            class_node_id = entity_global_id(
-                "Alternative_Class", class_name, None, global_types=global_types
-            )
-            class_set[class_name] = class_node_id
+        class_node_type = f"{ename}_Class"
+        class_set: dict[str, str] = {}  # classification value -> class_node_id
 
-            class_node = GraphNode(
-                id=class_node_id,
-                labels=["Alternative_Class", "Entity"],
-                properties={
-                    "name": class_name,
-                    "entity_type": "Alternative_Class",
-                    "class_name": class_name,
-                },
-                source_pmids=[],
-            )
-            # Merge source_pmids if node already exists
+        for node_id, node in list(nodes_by_id.items()):
+            if node.properties.get("entity_type") != ename:
+                continue
+            classification = node.properties.get(class_field)
+            if not classification or not isinstance(classification, str) or not classification.strip():
+                continue
+            class_name = classification.strip()
+
+            if class_name not in class_set:
+                class_node_id = entity_global_id(
+                    class_node_type, class_name, None, global_types=global_types
+                )
+                class_set[class_name] = class_node_id
+
+                class_node = GraphNode(
+                    id=class_node_id,
+                    labels=[class_node_type, "Entity"],
+                    properties={
+                        "name": class_name,
+                        "entity_type": class_node_type,
+                        "class_name": class_name,
+                    },
+                    source_pmids=[],
+                )
+                if class_node_id in nodes_by_id:
+                    existing = nodes_by_id[class_node_id]
+                    for pmid in node.source_pmids:
+                        if pmid not in existing.source_pmids:
+                            existing.source_pmids.append(pmid)
+                    if "class_name" not in existing.properties:
+                        existing.properties["class_name"] = class_name
+                else:
+                    nodes_by_id[class_node_id] = class_node
+
+            # Collect PMIDs for the class node
+            class_node_id = class_set[class_name]
             if class_node_id in nodes_by_id:
-                existing = nodes_by_id[class_node_id]
                 for pmid in node.source_pmids:
-                    if pmid not in existing.source_pmids:
-                        existing.source_pmids.append(pmid)
-                if "class_name" not in existing.properties:
-                    existing.properties["class_name"] = class_name
-            else:
-                nodes_by_id[class_node_id] = class_node
+                    if pmid not in nodes_by_id[class_node_id].source_pmids:
+                        nodes_by_id[class_node_id].source_pmids.append(pmid)
 
-        # Collect PMIDs for the Alternative_Class node
-        class_node_id = class_set[class_name]
-        if class_node_id in nodes_by_id:
-            for pmid in node.source_pmids:
-                if pmid not in nodes_by_id[class_node_id].source_pmids:
-                    nodes_by_id[class_node_id].source_pmids.append(pmid)
-
-        # Add belongs_to edge from Alternative → Alternative_Class
-        _add_edge(edges, node_id, class_node_id, "belongs_to", "", None)
+            # Add belongs_to edge from entity -> class node
+            _add_edge(edges, node_id, class_node_id, "belongs_to", "", None)
 
 
 def _deduplicate_global_nodes(

@@ -1,17 +1,25 @@
+# 抗生素替代物知识图谱 — 提取阶段定义
+# 基于 schema.md 第4节 按四个层级的提取要点
+
 phases:
+  # -----------------------------------------------------------------------
+  # Phase 1: Gate — 扫描核心实体，通过门控后才继续全文提取
+  # -----------------------------------------------------------------------
   gate:
-    description: "Scan for core entities — gate check before full extraction"
-    sections: [methods, body, abstract]
-    extracts: [Alternative]
+    description: "扫描全文，提取抗生素替代物实体（Alternative），通过门控检查后进入全文提取"
+    sections: [body]
+    extracts: [Alternative, Tissue_Site, Swine, Swine_Model, Control_Group, Intervention]
     gate:
       entity: Alternative
       condition: "classification not in ['Other', '', 'unmatched']"
       on_fail: skip_article
 
+  # -----------------------------------------------------------------------
+  # Phase 2: Bulk — 提取所有剩余实体
+  # -----------------------------------------------------------------------
   bulk:
-    description: "Extract all remaining entities from the full document"
-    sections: [methods, body, results, discussion]
+    description: "提取全文中的试验设计、指标、方法和结果实体"
+    sections: [body]
     extracts:
-      [Experiment, Swine, Intervention, Control_Group,
-       Tissue_Site, Indicator, Method, Result]
+      [Experiment, Indicator, Method, Result, Composite_Product]
     context_from: [gate]

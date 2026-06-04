@@ -3,7 +3,7 @@
 Routes entity types to specific article sections as specified in BACKGROUND.md:
 
     Abstract        → Literature (abstract_conclusion)
-    Materials & Methods → Alternative, Swine,
+    Materials & Methods → Alternative, Composite_Product, Swine,
                            Intervention, Control_Group, Tissue_Site, Indicator, Method
     Results & Discussion → Result
 
@@ -23,6 +23,7 @@ from src.adapters.pmc import (
     build_document,
     literature_pre_extractor,
     export_entity_review_csv,
+    _extract_conclusion,
 )
 from src.coreference import resolve_coreferences, clean_evidence_batch
 from src.data import Document, Extraction
@@ -37,12 +38,15 @@ logger = logging.getLogger(__name__)
 # Entities extracted from Materials & Methods
 _METHODS_ENTITIES = [
     "Alternative",
+    "Composite_Product",
     "Swine",
+    "Swine_Model",
     "Intervention",
     "Control_Group",
     "Tissue_Site",
     "Indicator",
     "Method",
+    "Experiment",
 ]
 
 # Entities extracted from Results & Discussion
@@ -51,6 +55,63 @@ _RESULTS_ENTITIES = [
 ]
 
 # Literature is pre-extracted (never sent to LLM)
+
+
+def _build_indicator_context(extractions: list) -> str:
+    """Build a reference list of Indicators for the Results prompt.
+
+    CRITICAL: The Results LLM MUST use the EXACT abbreviation from this list
+    as the indicator_abbreviation field value.
+    """
+    lines = ["CRITICAL: Use only these abbreviations for Result.indicator_abbreviation:"]
+    for ext in extractions:
+        if ext.extraction_class != "Indicator":
+            continue
+        abbr = (ext.attributes or {}).get("abbreviation", "") or ext.extraction_text
+        std = (ext.attributes or {}).get("standard_name", "")
+        site = (ext.attributes or {}).get("measured_in", "")
+        txt = ext.extraction_text[:60]
+        parts = [f'abbreviation="{abbr}"']
+        if std and std != abbr:
+            parts.append(f'full_name="{std}"')
+        if site:
+            parts.append(f'measured_in="{site}"')
+        parts.append(f'| extracted_as="{txt}"')
+        lines.append("  " + ", ".join(parts))
+    return "\n".join(lines) if lines else ""
+
+
+def _build_control_context(extractions: list) -> str:
+    """Build a compact reference list of Control_Groups for the Results prompt."""
+    lines = []
+    for ext in extractions:
+        if ext.extraction_class != "Control_Group":
+            continue
+        name = (ext.attributes or {}).get("group_name", "") or ext.extraction_text
+        gtype = (ext.attributes or {}).get("group_type", "")
+        desc = (ext.attributes or {}).get("description", "")
+        parts = [name]
+        if gtype:
+            parts.append(f"({gtype})")
+        if desc:
+            parts.append(f"- {desc[:60]}")
+        lines.append("  " + " ".join(parts))
+    return "\n".join(lines) if lines else ""
+
+
+def _build_tissue_context(extractions: list) -> str:
+    """Build a compact reference list of Tissue_Sites for the Results prompt."""
+    lines = []
+    for ext in extractions:
+        if ext.extraction_class != "Tissue_Site":
+            continue
+        name = (ext.attributes or {}).get("site_name", "") or ext.extraction_text
+        cat = (ext.attributes or {}).get("site_category", "")
+        parts = [name]
+        if cat:
+            parts.append(f"({cat})")
+        lines.append("  " + " ".join(parts))
+    return "\n".join(lines) if lines else ""
 
 
 # ---------------------------------------------------------------------------
@@ -141,10 +202,15 @@ def extract_sectioned(
     all_extractions: list[Extraction] = []
     warnings: list[str] = meta.parse_warnings.copy()
 
-    # 2. Pre-extraction: Literature from front-matter
+    # 2. Pre-extraction: Literature from front-matter metadata
     pre_ext = literature_pre_extractor(meta)
     lit_doc = build_document(meta)
     lit_exts = pre_ext(lit_doc)
+    # Also populate abstract_conclusion from the abstract text
+    if meta.abstract_text:
+        for lit in lit_exts:
+            if lit.attributes:
+                lit.attributes["abstract_conclusion"] = _extract_conclusion(meta.abstract_text)
     all_extractions.extend(lit_exts)
     logger.debug("Pre-extracted %d Literature entities", len(lit_exts))
 
@@ -174,14 +240,37 @@ def extract_sectioned(
             logger.warning("Methods extraction failed: %s", exc)
             warnings.append(f"Methods extraction failed: {exc}")
 
-    # 4. Results section extraction
+    # 4. Collect Methods entities as context for Results extraction
+    #    BACKGROUND.md §4.5: 确保每个提取的指标都能在材料与方法部分找到对应的Indicator定义
+    indicator_context = _build_indicator_context(all_extractions)
+    control_context = _build_control_context(all_extractions)
+    tissue_context = _build_tissue_context(all_extractions)
+    results_context = ""
+    if indicator_context:
+        results_context = (
+            "=== INDICATORS DEFINED IN METHODS (use EXACT abbreviations for Result.indicator_abbreviation) ===\n"
+            + indicator_context
+        )
+    if control_context:
+        results_context += (
+            "\n=== CONTROL GROUPS DEFINED IN METHODS (use EXACT names for Result.compared_to_group) ===\n"
+            + control_context
+        )
+    if tissue_context:
+        results_context += (
+            "\n=== TISSUE SITES DEFINED IN METHODS (use EXACT names for Result.tissue_site) ===\n"
+            + tissue_context
+        )
+
+    # 5. Results section extraction (with Methods context)
     results_text = _build_section_text(meta, "results")
     if results_text.strip():
-        logger.info("Results section: %d chars → %d entity types",
-                     len(results_text), len(_RESULTS_ENTITIES))
+        logger.info("Results section: %d chars → %d entity types (context: %d chars)",
+                     len(results_text), len(_RESULTS_ENTITIES), len(results_context))
         results_doc = Document(
             text=results_text,
             document_id=f"{doc_id}_results",
+            additional_context=results_context if results_context else None,
         )
         try:
             results_result = extract(
@@ -190,6 +279,7 @@ def extract_sectioned(
                 model=model,
                 max_char_buffer=max_char_buffer,
                 entity_names=_RESULTS_ENTITIES,
+                additional_context=results_context if results_context else None,
                 **kwargs,
             )
             results_exts = list(results_result.extractions)
@@ -200,17 +290,35 @@ def extract_sectioned(
             logger.warning("Results extraction failed: %s", exc)
             warnings.append(f"Results extraction failed: {exc}")
 
-    # 5. Clean evidence text (fix mid-word truncation)
-    clean_evidence_batch(all_extractions)
-
-    # 6. Guarantee evidence text for every entity (fallback to str.find)
+    # 5. Guarantee evidence text for every entity (fallback to str.find)
     from src.coreference import ensure_evidence_batch
     full_text = meta.full_text
     ensure_evidence_batch(all_extractions, full_text)
 
-    # 7. Resolve coreferences (abbreviation→full name, dedup)
+    # 5.5 Resolve coreferences (abbreviation→full name, dedup)
     all_extractions = resolve_coreferences(all_extractions, registry)
     logger.info("After coref: %d total entities", len(all_extractions))
+
+    # 6. Verify extraction_text in evidence BEFORE trimming (uses full evidence)
+    from src.validation import (
+        validate_mutual_exclusivity,
+        validate_cross_references,
+        clean_synthetic_names,
+        filter_incomplete_entities,
+        verify_extraction_text_in_evidence,
+    )
+    all_extractions = validate_mutual_exclusivity(all_extractions, registry)
+    all_extractions = clean_synthetic_names(all_extractions)
+    xref_warnings = validate_cross_references(all_extractions, registry)
+    warnings.extend(xref_warnings)
+    all_extractions = filter_incomplete_entities(all_extractions, registry)
+    all_extractions, verify_warnings = verify_extraction_text_in_evidence(all_extractions)
+    warnings.extend(verify_warnings)
+
+    # 7. Clean + trim evidence text (AFTER verification, so verify uses full text)
+    clean_evidence_batch(all_extractions)
+
+    logger.info("After validation: %d total entities (warnings: %d)", len(all_extractions), len(warnings))
 
     # 8. Post-process
     if registry is not None:
@@ -405,7 +513,7 @@ def run_sectioned_pipeline(
     # 3. Build graph
     if global_types is None:
         global_types = frozenset({
-            "Alternative", "Tissue_Site",
+            "Alternative", "Composite_Product", "Tissue_Site",
             "Indicator", "Method",
         })
     graph = build_graph([result], registry, global_types=global_types)
