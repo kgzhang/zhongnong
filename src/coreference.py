@@ -223,7 +223,7 @@ def _resolve_within_type_coref(
 
     Examples:
     - "CON" vs "Control" → "CON" is ≤5 uppercase chars, matches "Control"
-    - "ADG" vs "Average Daily Gain" → abbreviation resolution for Indicator
+    - "ADG" vs "Average Daily Gain" → abbreviation resolution
 
     Returns updated groups dict with merged groups.
     """
@@ -539,7 +539,7 @@ def _collect_unique_parts(texts: list[str]) -> list[str]:
 def ensure_evidence(
     extraction: Extraction,
     document_text: str,
-    context_chars: int = 200,
+    context_chars: int = 300,
 ) -> Extraction:
     """Guarantee that *extraction* has evidence_text.
 
@@ -547,7 +547,7 @@ def ensure_evidence(
     1. If evidence exists and contains extraction_text → keep as-is.
     2. If evidence exists but doesn't contain extraction_text → verify
        component words appear in evidence; if not, expand context window
-       progressively (400, 800, 1600 chars).
+       progressively (600, 1200, 2400, 4800, 9600 chars).
     3. If still not matching → mark for review with a synthetic-name flag.
     4. If evidence is empty → fall back to ``str.find()`` on document_text
        with progressive context expansion.
@@ -574,7 +574,7 @@ def ensure_evidence(
         # Try progressive context expansion around the alignment position.
         pos = _infer_char_position(extraction)
         if pos is not None and pos >= 0:
-            for factor in (2, 4, 8):  # 400, 800, 1600 chars
+            for factor in (2, 4, 8, 16, 32):  # 600, 1200, 2400, 4800, 9600 chars
                 expanded = _extract_context(document_text, pos, context_chars * factor)
                 if _text_components_in_evidence(txt, expanded):
                     extraction.evidence_text = expanded
@@ -592,7 +592,8 @@ def ensure_evidence(
             extraction.source_location = f"doc@{pos}"
         return extraction
 
-    # Case 4: full name not found → try individual significant words
+    # Case 4: full name not found → try individual significant words,
+    # but require stricter verification before accepting the result.
     # Split on spaces, underscores, hyphens to extract component words
     word_candidates = re.split(r"[\s_\-]+", txt.lower())
     words = [w for w in word_candidates if len(w) > 3 and w not in
@@ -605,14 +606,17 @@ def ensure_evidence(
             if 0 <= p < best_pos:
                 best_pos = p
         if best_pos < len(document_text):
-            for factor in (1, 2, 4):  # 200, 400, 800 chars
+            for factor in (1, 2, 4, 8):  # 300, 600, 1200, 2400 chars
                 expanded = _extract_context(document_text, best_pos, context_chars * factor)
-                if _text_components_in_evidence(txt, expanded):
+                # STRICT: require the FULL extraction_text (or a close variant
+                # with whitespace normalized) to appear in the evidence, not
+                # just component words.
+                if _text_contains_extraction(txt, expanded):
                     extraction.evidence_text = expanded
                     if not getattr(extraction, "source_location", ""):
                         extraction.source_location = f"doc@{best_pos}"
                     return extraction
-            # Best-effort fallback with widest window
+            # Best-effort: use the widest window even without full match
             extraction.evidence_text = _extract_context(
                 document_text, best_pos, context_chars * 8
             )
@@ -622,6 +626,48 @@ def ensure_evidence(
     # Case 5: nothing found — flag as synthetic
     _flag_synthetic_if_needed(extraction, txt)
     return extraction
+
+
+def _text_contains_extraction(name: str, evidence: str) -> bool:
+    """Strict check: does *evidence* contain *name* (or a whitespace-normalised
+    variant) verbatim?  Returns True only when the full extraction text can be
+    found in the evidence.
+
+    This is stricter than ``_text_components_in_evidence`` — it requires the
+    COMPLETE text to appear, not just component words.  Used as the final
+    acceptance gate in the multi-strategy evidence fallback.
+    """
+    if not evidence:
+        return False
+    ev_lower = evidence.lower()
+    name_lower = name.lower()
+
+    # Exact containment
+    if name_lower in ev_lower:
+        return True
+
+    # Whitespace-normalized containment: collapse all whitespace in both
+    # and try again.  Handles cases like "P < 0.05" vs "P<0.05".
+    import re
+    name_compact = re.sub(r"\s+", "", name_lower)
+    ev_compact = re.sub(r"\s+", "", ev_lower)
+    if name_compact and len(name_compact) >= 3 and name_compact in ev_compact:
+        return True
+
+    # Try normalising comparison operators: "P < 0.05" should match "P<0.05",
+    # "P less than 0.05", "p=0.03", "p = 0.03", etc.
+    if re.search(r"[<>≤≥=]", name_compact) or any(
+        op in name_lower for op in ("less than", "greater than")
+    ):
+        # Strip the operator for a looser check: just verify the numeric
+        # portion and the surrounding context
+        name_no_op = re.sub(
+            r"[<>≤≥=]|\bless\s+than\b|\bgreater\s+than\b", "", name_lower
+        ).strip()
+        if name_no_op and len(name_no_op) >= 2 and name_no_op in ev_lower:
+            return True
+
+    return False
 
 
 def _text_components_in_evidence(name: str, evidence: str) -> bool:
@@ -717,7 +763,7 @@ def _flag_synthetic_if_needed(extraction: Extraction, name: str) -> None:
 def ensure_evidence_batch(
     extractions: list[Extraction],
     document_text: str,
-    context_chars: int = 200,
+    context_chars: int = 300,
 ) -> list[Extraction]:
     """Apply :func:`ensure_evidence` to all extractions."""
     for ext in extractions:

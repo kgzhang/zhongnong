@@ -67,6 +67,7 @@ class EntityDef:
     references: list[ReferenceDef] = field(default_factory=list)
     inline_relations: list[InlineRelationDef] = field(default_factory=list)
     vocabulary: VocabularyBinding | None = None
+    dedup_mode: str = "exact"  # "exact", "fuzzy", or "article" (article-scoped)
 
 
 @dataclass
@@ -322,6 +323,15 @@ class SchemaRegistry:
                 inject_in_prompt=v.get("inject_in_prompt", True),
                 value_delimiter=v.get("value_delimiter"),
             )
+        # Read dedup_mode from top-level YAML field (preferred) or notes (legacy)
+        raw_notes = raw.get("notes", "")
+        dedup_mode = raw.get("dedup_mode", "exact")
+        if dedup_mode == "exact" and "dedup_mode:" in raw_notes:
+            # Legacy fallback: parse from notes for backward compatibility
+            import re as _re2
+            dm_match = _re2.search(r"dedup_mode\s*:\s*(\S+)", raw_notes)
+            if dm_match:
+                dedup_mode = dm_match.group(1).strip()
         return EntityDef(
             name=name,
             display_name=raw.get("display_name", name),
@@ -329,11 +339,12 @@ class SchemaRegistry:
             primary_text=raw.get("primary_text", ""),
             extraction_guidance=raw.get("extraction_guidance", ""),
             examples=raw.get("examples", []),
-            notes=raw.get("notes", ""),
+            notes=raw_notes,
             attributes=attrs,
             references=refs,
             inline_relations=inlines,
             vocabulary=vocab,
+            dedup_mode=dedup_mode,
         )
 
     def _load_relations(self) -> None:
@@ -397,6 +408,45 @@ class SchemaRegistry:
 
     def phase_defs(self) -> list[ExtractionPhase]:
         return list(self._phases)
+
+    def build_section_routing(self) -> list[dict]:
+        """Return ordered section-routing configuration from phase definitions.
+
+        Each entry is a dict with:
+          - ``section``: canonical section key (e.g. "body", "methods", "results")
+          - ``entity_names``: list of entity types to extract in this phase
+          - ``context_from``: list of prior phase names whose results are injected
+            as reference context
+
+        The results can be used by adapters to route entity types to specific
+        sections without hardcoding entity lists.
+        """
+        routing = []
+        for phase in self._phases:
+            # Map phase section names to canonical keys
+            section = "body"
+            if phase.sections:
+                section = phase.sections[0]
+            routing.append({
+                "phase": phase.name,
+                "section": section,
+                "entity_names": list(phase.extracts),
+                "context_from": list(phase.context_from),
+            })
+        return routing
+
+    def get_global_types(self) -> frozenset[str]:
+        """Return entity type names whose ``dedup_mode`` is NOT ``"article"``.
+
+        These entity types are shared across articles (global scope) —
+        deduplicated by name rather than by name+PMID.  Entity types with
+        ``dedup_mode: article`` are article-specific and will NOT appear in
+        the returned set.
+        """
+        return frozenset(
+            name for name, ed in self._entities.items()
+            if ed.dedup_mode != "article"
+        )
 
     def all_entity_names(self) -> list[str]:
         return list(self._entities.keys())
@@ -477,7 +527,12 @@ class SchemaRegistry:
         return result
 
     def build_extraction_prompt(self, entity_names: list[str]) -> str:
-        """Build extraction prompt from entity metadata."""
+        """Build extraction prompt from entity metadata.
+
+        Uses XML-style structural markers (``<task>``, ``<steps>``,
+        ``<entities>``, ``<format>``, ``<prohibitions>``) to help small
+        models parse task boundaries correctly.
+        """
         parts: list[str] = []
 
         # Build explicit field list for each entity
@@ -525,69 +580,123 @@ class SchemaRegistry:
                             f"{ex_text.split(' and ')[-1]}, NEVER both."
                         )
 
-        ref_section = ""
-        if ref_rules:
-            ref_section = (
-                "Entity reference relationships:\n" +
-                "\n".join(ref_rules) + "\n\n"
-            )
+        # ==================================================================
+        # STRUCTURED PROMPT with XML-style markers for small-model clarity
+        # ==================================================================
 
-        exclusivity_section = ""
-        if exclusivity_rules:
-            exclusivity_section = (
-                "CRITICAL EXCLUSIVITY RULES:\n" +
-                "\n".join(exclusivity_rules) + "\n\n"
-            )
-
-        # Format instruction — MUST use English field names for JSON keys
+        # --- <task> — what the model must do ---
         parts.append(
-            f'CRITICAL: Output valid JSON with these EXACT English entity types and attribute names.\n'
-            f'Entity types to extract: {", ".join(entity_names)}\n'
-            f'Required fields per entity:\n{field_list}\n'
-            f'JSON format: {{"extractions": [{{"EntityType": "primary_value", "EntityType_attributes": {{"field_name": value, ...}}}}, ...]}}\n'
-            f'ALL attribute keys MUST be in English as specified above. DO NOT translate field names to Chinese.\n'
-            f'\n'
-            f'GLOBAL RULES FOR ALL ENTITIES:\n'
-            f'1. Every entity MUST have extraction_text that appears VERBATIM in the source text. Do not invent or concatenate names.\n'
-            f'2. Do NOT add parenthetical annotations to extraction_text. Put supplementary names in their dedicated attribute fields.\n'
-            f'3. Every entity must be referenced by at least one other entity (no orphans).\n'
-            f'4. Each entity type has a distinct purpose. Do not duplicate the same entity across different entity types.\n'
-            f'5. Use the EXACT values and units as written in the source text. Do NOT perform unit conversions.\n'
-            f'6. Every entity that has reference fields (see below) MUST populate them with values that match existing entities of the target type.\n'
-            f'\n'
-            f'{ref_section}'
-            f'CRITICAL OUTPUT FORMAT RULES:\n'
-            f'- Use the entity type name directly as the JSON key, with the primary value as its value.\n'
-            f'  Correct: {{"EntityType": "example_value", "EntityType_attributes": {{"field_name": "value"}}}}\n'
-            f'  WRONG: {{"entity_type": "EntityType", "entity_value": "example_value"}}  -- do NOT use "entity_type" as a JSON key!\n'
-            f'- The attributes key MUST be "<EntityType>_attributes" exactly, not "attributes".\n'
-            f'\n'
-            f'CRITICAL ENTITY DISAMBIGUATION RULES:\n'
-            f'- Use the canonical full name as the primary value. Put abbreviations, acronyms, or alternate names in the abbreviation field, NOT as separate entities.\n'
-            f'- Be case-consistent. Use the same canonical name for the same entity throughout the document.\n'
-            f'- Hyphenated names and non-hyphenated variants refer to the SAME entity — always use the canonical form.\n'
-            f'- If you encounter an abbreviation/acronym, expand it to the full name for the primary value and put the abbreviation in the abbreviation field.\n'
-            f'- When extracting an entity that has reference fields (references another entity), you MUST populate those reference fields with values that EXACTLY match the target entity. Use the abbreviation or standard_name from the context list provided.\n'
-            f'\n'
-            f'STRICT VALUE RULES:\n'
-            f'- NEVER output "none", "unspecified", "unknown", "Not reported", "N/A", "na", or any similar placeholder as a value. If information is genuinely absent, use an EMPTY STRING "" instead.\n'
-            f'- NEVER invent or guess values. Only extract what is explicitly stated in the text.\n'
-            f'- Report measurements using the source text\'s original units verbatim. Do not convert between units.\n'
-            f'\n'
-            f'{exclusivity_section}'
+            "<task>\n"
+            f"Extract structured entities from the scientific paper text below.\n"
+            f"Entity types to extract: {', '.join(entity_names)}.\n"
+            f"Output valid JSON with the EXACT entity type names and attribute "
+            f"field names specified below. ALL keys MUST be in English.\n"
+            "</task>"
         )
 
+        # --- <steps> — numbered step-by-step instructions ---
+        parts.append(
+            "<steps>\n"
+            "Step 1: Read the source text carefully from beginning to end.\n"
+            "Step 2: Identify every item that matches one of the entity types "
+            "defined below. Look at ALL sections of the text.\n"
+            "Step 3: For each identified item, determine the correct entity "
+            "type and fill in ALL required attributes.\n"
+            "Step 4: The primary text value (extraction_text) MUST be a "
+            "VERBATIM substring from the source text — at least one complete "
+            "word, number, or phrase, long enough to uniquely locate it in "
+            "the original document. Do NOT abbreviate, rephrase, normalize, "
+            "or translate it.\n"
+            "Step 5: Populate all reference fields with values that match "
+            "existing entities of the target type.\n"
+            "Step 6: Output the result as a JSON array under the key "
+            '"extractions".\n'
+            "</steps>"
+        )
+
+        # --- <format> — output format specification ---
+        format_parts = [
+            "<format>",
+            "Output a JSON object with a single key \"extractions\" containing "
+            "an array of entity objects.",
+            "",
+            "Each entity object has TWO keys:",
+            f"  - The entity type name (one of: {', '.join(entity_names)}) as "
+            "the key, with the primary text value as its value.",
+            "  - \"<EntityType>_attributes\" as the key, with a dict of "
+            "attribute field_name: value pairs.",
+            "",
+            "CORRECT example:",
+            '  {"EntityType": "primary_value", "EntityType_attributes": {"field_name": "value"}}',
+            "",
+            "WRONG — do NOT use \"entity_type\" or \"entity_value\" as JSON keys:",
+            '  {"entity_type": "EntityType", "entity_value": "value"}  // WRONG',
+            "",
+            "Required fields per entity type:",
+            field_list,
+            "</format>",
+        ]
+        parts.append("\n".join(format_parts))
+
+        # --- <prohibitions> — explicit negative rules ---
+        proh_parts = [
+            "<prohibitions>",
+            "DO NOT do any of the following:",
+            "- Output \"none\", \"unspecified\", \"unknown\", \"Not reported\", "
+            "\"N/A\", or \"na\" as a value. Use empty string \"\" instead.",
+            "- Invent or guess names that do not appear verbatim in the text.",
+            "- Concatenate multiple substance names into a single "
+            "extraction_text (e.g., \"thymol_carvacrol\" is WRONG).",
+            "- Translate field names to Chinese or any other language — ALL "
+            "JSON keys MUST be in English.",
+            "- Add parenthetical annotations to extraction_text. Put "
+            "supplementary names in their dedicated attribute fields.",
+            "- Create an entity without finding its exact mention in the text.",
+            "- Use the keys \"entity_type\" or \"entity_value\" in the JSON "
+            "output — use the actual entity type name as the key.",
+        ]
+        if exclusivity_rules:
+            proh_parts.append("")
+            proh_parts.append("EXCLUSIVITY RULES:")
+            proh_parts.extend(exclusivity_rules)
+        proh_parts.append("</prohibitions>")
+        parts.append("\n".join(proh_parts))
+
+        # --- <rules> — global extraction rules ---
+        rules_parts = [
+            "<rules>",
+            "1. Every extraction_text MUST appear VERBATIM in the source text.",
+            "2. Use the canonical full name as the primary value. Put "
+            "abbreviations in the abbreviation field.",
+            "3. Be case-consistent — use the same canonical name for the same "
+            "entity throughout the document.",
+            "4. Each entity type has a distinct purpose. Do NOT duplicate the "
+            "same real-world item across multiple entity types.",
+            "5. Use EXACT values and units as written in the source text. "
+            "Do NOT perform unit conversions.",
+            "6. When an entity has reference fields, populate them with "
+            "values that EXACTLY match the target entity's primary text.",
+        ]
+        if ref_rules:
+            rules_parts.append("")
+            rules_parts.append("Reference relationships:")
+            rules_parts.extend(ref_rules)
+        rules_parts.append("</rules>")
+        parts.append("\n".join(rules_parts))
+
+        # --- <entities> — per-entity definitions ---
+        entity_parts = ["<entities>"]
         for ename in entity_names:
             ed = self.entity_def(ename)
-            parts.append(f"## {ed.display_name} ({ename})")
+            ep = [f"## {ed.display_name} ({ename})"]
             if ed.description:
-                parts.append(f"\n{ed.description}")
+                ep.append(f"\n{ed.description}")
             if ed.extraction_guidance:
-                parts.append(f"\n{ed.extraction_guidance}")
+                ep.append(f"\n{ed.extraction_guidance}")
             if ed.notes:
-                parts.append(f"\nNote: {ed.notes}")
+                ep.append(f"\nNote: {ed.notes}")
 
-            # Inject enum field constraints so the model knows allowed values
+            # Inject enum field constraints
             llm_fields = self.llm_output_fields(ename)
             enum_fields = [a for a in llm_fields if a.type == "enum" and a.enum_values]
             if enum_fields:
@@ -595,12 +704,24 @@ class SchemaRegistry:
                 for a in enum_fields:
                     vals = ", ".join(a.enum_values)
                     enum_lines.append(f"  - {a.name}: [{vals}]")
-                parts.append("\n".join(enum_lines))
+                ep.append("\n".join(enum_lines))
 
-            # Inject vocabulary summary (categories + examples, not full list)
+            # Inject vocabulary summary (categories + examples)
             vocab = self.vocabulary(ename)
             if vocab and vocab.entries and (ed.vocabulary and ed.vocabulary.inject_in_prompt):
-                parts.append(f"\n{vocab.format_for_prompt(summary_only=True)}")
+                ep.append(f"\n{vocab.format_for_prompt(summary_only=True)}")
+
+            entity_parts.append("\n\n".join(ep))
+        entity_parts.append("</entities>")
+        parts.append("\n".join(entity_parts))
+
+        # --- Source text marker ---
+        parts.append(
+            "<source_text>\n"
+            "The text to extract from follows below.\n"
+            "</source_text>"
+        )
+
         return "\n\n".join(parts).strip()
 
     def post_process(self, extraction: Extraction) -> Extraction:
@@ -646,7 +767,7 @@ class SchemaRegistry:
         """Enhanced vocabulary matching with cascading match strategies.
 
         Uses the vocabulary binding's field mappings for the matched row,
-        avoiding hardcoded Alternative-specific column names.
+        avoiding hardcoded entity-specific column names.
         """
         binding = ed.vocabulary
         if not binding:
@@ -757,7 +878,7 @@ class SchemaRegistry:
         lookup_value: str,
         ed: EntityDef,
     ) -> None:
-        """Second-pass best-effort match for unmatched Alternatives.
+        """Second-pass best-effort match.
 
         Uses aggressive normalization (remove spaces and punctuation)
         to find partial matches in the vocabulary.
@@ -809,37 +930,138 @@ class SchemaRegistry:
                             break
                     return
 
+    # ------------------------------------------------------------------
+    # Gate evaluation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_gate_condition(condition: str) -> tuple[str, str, list[str]]:
+        """Parse a gate condition string into (field_name, operator, excluded_values).
+
+        Supports forms like:
+          - "classification not in ['Other', '', 'unmatched']"
+          - "classification in ['ValidClass']"
+          - "not_empty"  (any non-empty value passes)
+
+        Returns (field, 'not_in'|'in'|'not_empty', [values]).
+        """
+        field = ""
+        operator = ""
+        values: list[str] = []
+        stripped = condition.strip()
+
+        if not stripped:
+            return ("", "any", [])
+
+        if stripped == "not_empty":
+            return ("", "not_empty", [])
+
+        # Parse "field not in ['val1', 'val2']" or "field in ['val1']"
+        import ast
+        m = re.match(r"(\w+)\s+(not\s+in|in)\s+(\[.+\])", stripped)
+        if m:
+            field = m.group(1)
+            operator = m.group(2).replace(" ", "_")  # "not in" → "not_in"
+            try:
+                values = ast.literal_eval(m.group(3))
+            except (ValueError, SyntaxError):
+                values = []
+        else:
+            # Try simpler form: "field not empty" or "field exists"
+            m2 = re.match(r"(\w+)\s+(not\s+empty|exists|is\s+set)", stripped)
+            if m2:
+                field = m2.group(1)
+                operator = "not_empty"
+
+        return (field, operator, values)
+
     def evaluate_gate(
         self,
         extractions: list[Extraction],
         gate_entity: str,
         gate_condition: str,
     ) -> bool:
-        """Evaluate a gate condition against extractions.  Generic — no hardcoded
-        entity or field names.
+        """Evaluate a gate condition against extractions.
+
+        Parses *gate_condition* to determine the pass criteria, then checks
+        whether any extraction of *gate_entity* satisfies it.
 
         Returns True if the gate passes (article should continue).
+
+        Condition syntax:
+          - ``"<field> not in [<values>]"`` — pass if any entity has the field
+            with a value NOT in the exclusion list
+          - ``"<field> in [<values>]"`` — pass if any entity has the field
+            with a value IN the inclusion list
+          - ``"not_empty"`` — pass if there is any extraction of gate_entity at
+            all
+          - empty string → always pass
+
+        When the field name cannot be resolved to a known attribute, the method
+        falls back to checking *all* ``source=post`` enum attributes — the same
+        logic used when no condition is provided.
         """
         if not gate_entity or not gate_condition:
             return True  # no gate → pass
 
-        # Parse condition like "class_field not in ['Other', '']"
-        # For now: check if ANY extraction of gate_entity has a post field
-        # whose value is not empty and not "Other"
-        for ext in extractions:
-            if ext.extraction_class != gate_entity:
-                continue
-            attrs = ext.attributes or {}
-            # Check all post-process fields for non-Other values
+        field, operator, values = self._parse_gate_condition(gate_condition)
+
+        if operator == "any":
+            return True  # empty/unparseable condition → pass
+
+        # Resolve field to known attribute(s)
+        check_attrs: list = []
+        if field:
+            try:
+                ed = self.entity_def(gate_entity)
+                for a in ed.attributes:
+                    if a.name == field:
+                        check_attrs.append(a)
+                        break
+            except KeyError:
+                pass
+
+        # Fallback: if field not found in entity attributes, check all post/enum fields
+        if not check_attrs:
             try:
                 ed = self.entity_def(gate_entity)
                 for a in ed.attributes:
                     if a.source == "post" and a.type == "enum":
-                        val = attrs.get(a.name, "")
-                        if val and val not in ("Other", "", "unmatched"):
-                            return True
+                        check_attrs.append(a)
             except KeyError:
                 pass
+
+        # Build the set of values to check against
+        exclude_set_lower: set[str] = set()
+        include_set_lower: set[str] = set()
+        if operator == "not_in":
+            exclude_set_lower = {v.lower().strip() for v in values if isinstance(v, str)}
+        elif operator == "in":
+            include_set_lower = {v.lower().strip() for v in values if isinstance(v, str)}
+
+        for ext in extractions:
+            if ext.extraction_class != gate_entity:
+                continue
+            attrs = ext.attributes or {}
+
+            if operator == "not_empty":
+                # Any extraction of this entity type → pass
+                return True
+
+            for a in check_attrs:
+                val = attrs.get(a.name, "")
+                if isinstance(val, str):
+                    val_lower = val.lower().strip()
+                else:
+                    val_lower = ""
+
+                if operator == "not_in":
+                    if val_lower and val_lower not in exclude_set_lower:
+                        return True
+                elif operator == "in":
+                    if val_lower in include_set_lower:
+                        return True
+
         return False
 
     def validate_extraction(self, extraction: Extraction) -> list[str]:

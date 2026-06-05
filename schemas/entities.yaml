@@ -1,543 +1,894 @@
-# 抗生素替代物知识图谱 — 实体类型定义
-# 基于 schema.md v2 规范
-
 entities:
-  # -----------------------------------------------------------------------
-  # 1.1 Alternative（抗生素替代物物质）
-  # -----------------------------------------------------------------------
   Alternative:
-    display_name: "Antibiotic Alternative Substance"
+    display_name: Antibiotic Alternative Substance
     primary_text: standard_name
-    description: >
-      Active compound, microorganism, or biological product tested as a
-      replacement for in-feed antibiotics in swine production. Includes
-      plant extracts, probiotics, organic acids, enzymes, trace elements,
-      oligosaccharides, polysaccharides, and bioactive peptides. This entity
-      covers SINGLE substances only. For multi-component blends, use the
-      Composite_Product entity instead.
-    extraction_guidance: |
-      ## Extraction Rules for Alternative
+    description: 'Active compound, microorganism, or biological product tested as
+      a replacement for in-feed antibiotics in swine production. Includes plant extracts,
+      probiotics, organic acids, enzymes, trace elements, oligosaccharides, polysaccharides,
+      and bioactive peptides. This entity covers SINGLE substances only. For multi-component
+      blends, use the Composite_Product entity instead.
 
-      1. SCAN: Search the entire paper, especially the Materials & Methods
-         section, for ALL substances administered with the intent to replace
-         or reduce antibiotic use in pigs. Look for: feed additives, dietary
-         supplements, commercial products, natural compounds, fermentation
-         products, probiotics, prebiotics, enzymes, organic acids, plant
-         extracts, trace elements, bioactive peptides, and oligosaccharides.
-
-      2. VOCABULARY MATCH: For each substance found, match it against the
-         candidate vocabulary in ALTERNATIVE.tsv.
-         - Vocabulary match found → record the standard_name as the canonical
-           name, and mark match_source accordingly.
-         - No vocabulary match AND it is a SINGLE substance → classification
-           will be set to "Other" by post-processor. Preserve the original name
-           exactly as written in the paper in standard_name.
-
-      3. COMPOSITE PRODUCTS: For multi-component blends, do NOT concatenate
-         component names into a single Alternative. Instead:
-         a) Create a Composite_Product entity for the blend
-         b) Create separate Alternative entities for each component
-         c) Link via has_component relationships
-
-      4. ANTIBIOTIC EXCLUSION: All positive-control antibiotics (e.g.,
-         Chlortetracycline, Bacitracin, Colistin) MUST NOT be extracted as
-         Alternative entities. Their information belongs in the Intervention
-         substance_name field.
-
-      5. EVIDENCE: Always provide evidence_text (the original sentence
-         mentioning this substance) and source_location (e.g.,
-         "Materials and Methods, paragraph 3").
-    notes: |
-      CRITICAL RULES:
-      - DO NOT output 'none', 'unspecified', 'unknown', 'Not reported',
-        'N/A', 'na', or any similar placeholder as a value. Use empty
-        string "" instead if information is genuinely absent.
-      - Preserve the original English name and abbreviation verbatim from
-        the source text. Do not invent names or merge entities.
-      - Vocabulary source: ALTERNATIVE.tsv, key field: "Alternative (具体物质)",
-        class field: "Alternative_Class (一级分类)".
-
-      mutually_exclusive_with: Composite_Product
-      dedup_mode: fuzzy
-      priority: 2
+      '
+    extraction_guidance: "## Extraction Rules for Alternative\n\n1. SCAN: Search the\
+      \ entire paper, especially the Materials & Methods\n   section, for ALL substances\
+      \ administered with the intent to replace\n   or reduce antibiotic use in pigs.\
+      \ Look for: feed additives, dietary\n   supplements, commercial products, natural\
+      \ compounds, fermentation\n   products, probiotics, prebiotics, enzymes, organic\
+      \ acids, plant\n   extracts, trace elements, bioactive peptides, and oligosaccharides.\n\
+      \n2. VOCABULARY MATCH: For each substance found, match it against the\n   candidate\
+      \ vocabulary in ALTERNATIVE.tsv. Use fuzzy matching.\n   - Vocabulary match\
+      \ found → record the standard_name exactly as it\n     appears in the vocabulary,\
+      \ and mark match_source accordingly.\n     The classification will be auto-populated\
+      \ from the vocabulary.\n   - No vocabulary match AND it is a SINGLE substance\
+      \ → classification\n     set to \"Other\" (by post-processor), match_source\
+      \ = \"unmatched\".\n     Preserve the original name exactly as written in the\
+      \ paper.\n\n3. ORIGINAL TEXT PRESERVATION: Copy the EXACT original English name\n\
+      \   and abbreviation verbatim from the source text into the\n   original_text\
+      \ field. Do NOT normalize, translate, or modify.\n\n4. ANTIBIOTIC EXCLUSION:\
+      \ All positive-control antibiotics (e.g.,\n   Chlortetracycline, Bacitracin,\
+      \ Colistin) MUST NOT be extracted as\n   Alternative entities. Their information\
+      \ belongs in the Intervention\n   substance_name field.\n\n5. EVIDENCE: Always\
+      \ provide evidence_text (the original sentence\n   mentioning this substance)\
+      \ and source_location.\n\n6. SIX STANDARD CLASSES plus OTHER:\n   Standard:\
+      \ Plant_Extract, Trace_Element, Organic_Acid, Probiotic,\n   Polysaccharides_and_Oligosaccharides,\
+      \ Enzyme, Bioactive_Peptides.\n   Special: Other (single substance not in vocabulary).\n"
+    notes: "CRITICAL RULES:\n- DO NOT output 'none', 'unspecified', 'unknown', 'Not\
+      \ reported',\n  'N/A', 'na', or any similar placeholder as a value. Use empty\n\
+      \  string \"\" instead if information is genuinely absent.\n- Preserve the original\
+      \ English name and abbreviation verbatim from\n  the source text in original_text.\
+      \ Do not invent names or merge entities.\n- The primary_text field is standard_name\
+      \ — this is the canonical\n  identifier for entity_global_id purposes.\n- Vocabulary\
+      \ source: ALTERNATIVE.tsv.\n\nmutually_exclusive_with: Composite_Product\npriority:\
+      \ 2\n"
+    dedup_mode: fuzzy
     vocabulary:
       source: ALTERNATIVE.tsv
-      key_field: "Alternative (具体物质)"
-      class_field: "Alternative_Class (一级分类)"
-      subclass_field: "Subclass (二级分类)"
-      match_fields: ["Alternative (具体物质)"]
+      key_field: Alternative (具体物质)
+      class_field: Alternative_Class (一级分类)
+      subclass_field: Subclass (二级分类)
+      match_fields:
+      - Alternative (具体物质)
       match_mode: fuzzy
       inject_in_prompt: false
-      value_delimiter: ","
+      value_delimiter: ','
     attributes:
-      # LLM-extracted fields
-      - {name: standard_name, type: string, required: true, source: llm}
-      - {name: abbreviation, type: string, required: false, source: llm}
-      - {name: cas_number, type: string, required: false, source: llm}
-      - {name: source_organism, type: string, required: false, source: llm}
-      - {name: is_synthetic, type: boolean, required: false, source: llm}
-      # Post-processed fields (vocabulary matching)
-      - {name: classification, type: enum, required: true, source: post,
-         values: [Plant_Extract, Trace_Element, Organic_Acid, Probiotic,
-                  Polysaccharides_and_Oligosaccharides, Enzyme, Bioactive_Peptides, Other]}
-      - {name: subclass, type: string, required: false, source: post}
-      - {name: match_source, type: enum, required: true, source: post,
-         values: [exact, fuzzy, unmatched]}
-      # Engineering-derived fields
-      - {name: evidence_text, type: text, required: true, source: align}
-      - {name: source_location, type: string, required: true, source: structure}
-
-  # -----------------------------------------------------------------------
-  # 1.2 Alternative_Class（物质分类）— 预定义，无需LLM提取
-  # -----------------------------------------------------------------------
+    - name: standard_name
+      type: string
+      required: true
+      source: llm
+    - name: abbreviation
+      type: string
+      required: false
+      source: llm
+    - name: cas_number
+      type: string
+      required: false
+      source: llm
+    - name: source_organism
+      type: string
+      required: false
+      source: llm
+    - name: is_synthetic
+      type: boolean
+      required: false
+      source: llm
+    - name: original_text
+      type: string
+      required: true
+      source: llm
+    - name: classification
+      type: enum
+      required: true
+      source: post
+      values:
+      - Plant_Extract
+      - Trace_Element
+      - Organic_Acid
+      - Probiotic
+      - Polysaccharides_and_Oligosaccharides
+      - Enzyme
+      - Bioactive_Peptides
+      - Other
+    - name: subclass
+      type: string
+      required: false
+      source: post
+    - name: match_source
+      type: enum
+      required: true
+      source: post
+      values:
+      - exact
+      - fuzzy
+      - unmatched
+    - name: evidence_text
+      type: text
+      required: true
+      source: align
+    - name: source_location
+      type: string
+      required: true
+      source: structure
   Alternative_Class:
-    display_name: "Alternative Classification"
+    display_name: Alternative Classification
     primary_text: class_name
-    description: >
-      Predefined classification hierarchy for antibiotic alternative substances.
-      Populated from the ALTERNATIVE.tsv vocabulary table — no LLM extraction
-      needed.
-    extraction_guidance: ""
-    notes: |
-      This entity is predefined and derived from the vocabulary table.
-      Standard classes: Plant_Extract, Trace_Element, Organic_Acid, Probiotic,
-      Polysaccharides_and_Oligosaccharides, Enzyme, Bioactive_Peptides, Other.
-    attributes:
-      - {name: class_name, type: string, required: true, source: structure}
-      - {name: level, type: integer, required: true, source: structure}
-      - {name: description, type: text, required: false, source: structure}
+    description: 'Classification category for antibiotic alternative substances. Seven
+      standard classes plus Other. Created during post-processing, NOT extracted by
+      the LLM.
 
-  # -----------------------------------------------------------------------
-  # 1.3 Composite_Product（复合产品）
-  # -----------------------------------------------------------------------
+      '
+    extraction_guidance: ''
+    notes: 'This entity is created during graph building from the classification field
+      on Alternative entities. It is NEVER sent to the LLM.
+
+      '
+    attributes:
+    - name: class_name
+      type: string
+      required: true
+      source: structure
+    - name: level
+      type: integer
+      required: false
+      source: structure
+    - name: description
+      type: text
+      required: false
+      source: structure
+    dedup_mode: exact
   Composite_Product:
-    display_name: "Composite Product / Commercial Blend"
+    display_name: Composite Product / Commercial Blend
     primary_text: product_name
-    description: >
-      A multi-component product (commercial or experimental blend) that
-      contains two or more active antibiotic-alternative substances.
-      Linked to its individual components via has_component relationships.
-      Mutually exclusive with Alternative — a given item is EITHER a single
-      Alternative OR a Composite_Product, NEVER both.
-    extraction_guidance: |
-      ## Three-Step Rule for Composite Products
+    description: 'A multi-component product (commercial or experimental blend) that
+      contains two or more active antibiotic-alternative substances. Linked to its
+      individual components via has_component relationships. Each component must be
+      a separate Alternative entity.
 
-      1. IDENTIFY: Find multi-component blends (commercial products like
-         "Product X", or experimental mixtures with 2+ active substances).
+      '
+    extraction_guidance: "## Three-Step Rule for Composite Products\n\n1. IDENTIFY:\
+      \ Find multi-component blends (commercial products like\n   \"Product X\", or\
+      \ experimental mixtures with 2+ active substances).\n\n2. DECOMPOSE: For each\
+      \ component in the blend, create a SEPARATE\n   Alternative entity with its\
+      \ own standard_name and evidence_text.\n\n3. LINK: Populate the \"components\"\
+      \ field with the standard_name of\n   each component Alternative entity.\n\n\
+      CRITICAL: Do NOT concatenate component names into a single long string\nas the\
+      \ Alternative name. Each component must be its own entity.\nNEVER concatenate\
+      \ component names with \"+\".\n"
+    notes: 'mutually_exclusive_with: Alternative
 
-      2. DECOMPOSE: For each component in the blend, create a SEPARATE
-         Alternative entity with its own standard_name and evidence_text.
-
-      3. LINK: Populate the "components" field with references to those
-         Alternative entities.
-
-      CRITICAL: Do NOT concatenate component names into a single long string
-      as the Alternative name. Each component must be its own entity.
-    notes: |
-      mutually_exclusive_with: Alternative
-      dedup_mode: exact
+      priority: 3'
     attributes:
-      # LLM-extracted fields
-      - {name: product_name, type: string, required: true, source: llm}
-      - {name: manufacturer, type: string, required: false, source: llm}
-      - {name: is_commercial, type: boolean, required: false, source: llm}
-      # Inline relation: components
-      - {name: components, type: json_array, required: false, source: llm}
-      # Engineering-derived fields
-      - {name: evidence_text, type: text, required: true, source: align}
-      - {name: source_location, type: string, required: true, source: structure}
+    - name: product_name
+      type: string
+      required: true
+      source: llm
+    - name: manufacturer
+      type: string
+      required: false
+      source: llm
+    - name: is_commercial
+      type: boolean
+      required: false
+      source: llm
+    - name: components
+      type: json_array
+      required: true
+      source: llm
+    - name: evidence_text
+      type: text
+      required: true
+      source: align
+    - name: source_location
+      type: string
+      required: true
+      source: structure
     inline_relations:
-      - {name: has_component, target: [Alternative, Composite_Product], via_field: components, multiple: true}
-
-  # -----------------------------------------------------------------------
-  # 1.4 Literature（文献）— 工程手段从PMC元数据提取
-  # -----------------------------------------------------------------------
+    - name: has_component
+      target:
+      - Alternative
+      - Composite_Product
+      via_field: components
+      multiple: true
+    dedup_mode: article
   Literature:
-    display_name: "Literature"
-    primary_text: doi
-    description: >
-      Scientific publication metadata. Created entirely through engineering
-      means from PMC XML front-matter — NOT extracted by LLM.
-    notes: |
-      All attributes are derived from XML metadata. This entity is created
-      by the pre_extractor hook, bypassing the LLM entirely.
-    attributes:
-      - {name: doi, type: string, required: true, source: structure}
-      - {name: pmid, type: string, required: false, source: structure}
-      - {name: title, type: string, required: true, source: structure}
-      - {name: journal, type: string, required: false, source: structure}
-      - {name: abstract_conclusion, type: text, required: false, source: structure}
-      - {name: publication_year, type: integer, required: false, source: structure}
-      - {name: publication_date, type: string, required: false, source: structure}
-      - {name: study_design, type: string, required: false, source: structure}
+    display_name: Literature Reference
+    primary_text: title
+    description: 'Published research article identified by DOI or PMID. This entity
+      captures document-level metadata. Created entirely through engineering means
+      from PMC XML front-matter — NOT extracted by LLM.
 
-  # -----------------------------------------------------------------------
-  # 1.5 Experiment（试验）
-  # -----------------------------------------------------------------------
+      '
+    extraction_guidance: ''
+    notes: 'This entity is populated ENTIRELY by the pre-extractor from document metadata.
+      It is NEVER sent to the LLM for extraction. The primary_text field is title.
+
+      '
+    attributes:
+    - name: doi
+      type: string
+      required: true
+      source: structure
+    - name: pmid
+      type: string
+      required: true
+      source: structure
+    - name: title
+      type: string
+      required: true
+      source: structure
+    - name: journal
+      type: string
+      required: false
+      source: structure
+    - name: abstract_conclusion
+      type: text
+      required: false
+      source: structure
+    - name: publication_year
+      type: integer
+      required: false
+      source: structure
+    - name: publication_date
+      type: string
+      required: false
+      source: structure
+    - name: study_design
+      type: string
+      required: false
+      source: structure
+    - name: evidence_text
+      type: text
+      required: true
+      source: align
+    - name: source_location
+      type: string
+      required: true
+      source: structure
+    dedup_mode: article
   Experiment:
-    display_name: "Experiment"
+    display_name: Experiment / Trial
     primary_text: experiment_id
-    description: >
-      An individual experiment or trial reported in the literature.
-      Each experiment is linked to its animal model, subjects, interventions,
-      and measured indicators.
-    notes: |
-      dedup_mode: exact
-    extraction_guidance: |
-      ## Extraction Rules
+    description: 'A self-contained experimental unit within a publication. A single
+      paper may contain one or multiple experiments. Each experiment has its own set
+      of animal groups, interventions, and measurements.
 
-      1. Identify each distinct experiment/trial described in the paper.
-         Some papers report multiple experiments (e.g., Exp 1 and Exp 2).
-
-      2. Generate a unique experiment_id (e.g., "Exp_01", "Exp_02").
-
-      3. Record the experimental design details in the description field.
+      '
+    notes: ''
+    extraction_guidance: "## Extraction Rules for Experiment\n\n1. IDENTIFY EXPERIMENTAL\
+      \ UNITS: Read the Materials & Methods section\n   and identify each self-contained\
+      \ experiment or trial.\n\n2. CREATE ONE ENTITY PER EXPERIMENT: Use the designation\
+      \ from the paper\n   (e.g., \"Exp. 1\", \"Trial 2\") if provided. If not explicitly\
+      \ labelled,\n   create a descriptive ID.\n\n3. DESCRIPTION: Provide a brief\
+      \ factual description of the experiment's\n   purpose, design, and duration\
+      \ from M&M — not your own interpretation.\n\n4. SCOPE: All downstream entities\
+      \ (Swine, Intervention, Control_Group,\n   Indicator, Result) should be linked\
+      \ to the appropriate Experiment\n   via relationships.\n"
     attributes:
-      - {name: experiment_id, type: string, required: true, source: llm}
-      - {name: description, type: text, required: false, source: llm}
-      - {name: evidence_text, type: text, required: true, source: align}
-      - {name: source_location, type: string, required: true, source: structure}
+    - name: experiment_id
+      type: string
+      required: true
+      source: llm
+    - name: description
+      type: text
+      required: false
+      source: llm
+    - name: evidence_text
+      type: text
+      required: true
+      source: align
+    - name: source_location
+      type: string
+      required: true
+      source: structure
     references:
-      - {name: swine_model, target_entity: Swine_Model, target_field: model_type, edge_type: uses_model}
-      - {name: swine_info, target_entity: Swine, target_field: breed, edge_type: uses_animal}
-      - {name: interventions, target_entity: Intervention, target_field: group_label, edge_type: has_intervention}
-      - {name: control_groups, target_entity: Control_Group, target_field: group_name, edge_type: uses_control}
-      - {name: indicators, target_entity: Indicator, target_field: standard_name, edge_type: measures_indicator}
-
-  # -----------------------------------------------------------------------
-  # 1.6 Swine_Model（动物模型）
-  # -----------------------------------------------------------------------
+    - name: swine_model
+      target_entity: Swine_Model
+      target_field: model_type
+      edge_type: uses_model
+    - name: swine_info
+      target_entity: Swine
+      target_field: breed
+      edge_type: uses_animal
+    - name: interventions
+      target_entity: Intervention
+      target_field: group_label
+      edge_type: has_intervention
+    - name: control_groups
+      target_entity: Control_Group
+      target_field: group_name
+      edge_type: uses_control
+    - name: indicators
+      target_entity: Indicator
+      target_field: abbreviation
+      edge_type: measures_indicator
+    dedup_mode: article
   Swine_Model:
-    display_name: "Swine Animal Model"
+    display_name: Swine Animal Model
     primary_text: stressor_name
-    description: >
-      The animal challenge or health model used in the experiment.
-      Describes whether animals were challenged with a stressor (e.g.,
-      E. coli, LPS, Diquat) or maintained under normal conditions.
-    notes: |
-      dedup_mode: exact
-    extraction_guidance: |
-      ## Extraction Rules
+    description: 'The animal challenge or health model used in the experiment. Describes
+      whether animals were challenged with a stressor (e.g., E. coli, LPS, Diquat)
+      or maintained under normal conditions. This entity is OPTIONAL — skip entirely
+      if no challenge/stress information is described.
 
-      1. model_type: Use "challenge" if a stressor was applied, "normal"
-         if animals were healthy with no challenge.
-
-      2. For multiple stressors applied simultaneously, merge into one
-         Swine_Model (e.g., stressor_name = "E. coli K88 + LPS") to
-         reduce node redundancy. Alternatively, create one Swine_Model per
-         stressor and use multiple uses_model relationships.
-
-      3. If no challenge/stress is described, set model_type = "normal",
-         stressor_name = "None".
-
-      4. Clearly distinguish between absolute blank controls and model
-         controls (record as Control_Group entities).
+      '
+    notes: ''
+    extraction_guidance: "## Extraction Rules\n\n1. model_type: Use \"challenge\"\
+      \ if a stressor was applied, \"normal\"\n   if animals were healthy with no\
+      \ challenge.\n\n2. For multiple stressors applied simultaneously, merge into\
+      \ one\n   Swine_Model (e.g., stressor_name = \"E. coli K88 + LPS\").\n\n3. If\
+      \ no challenge/stress is described OR the information is unclear,\n   DO NOT\
+      \ create this entity at all. It is optional.\n\n4. Clearly distinguish between\
+      \ absolute blank controls and model\n   controls (record as Control_Group entities).\n"
     attributes:
-      - {name: model_type, type: enum, required: true, source: llm,
-         values: [challenge, normal]}
-      - {name: stressor_name, type: string, required: true, source: llm}
-      - {name: challenge_method, type: string, required: false, source: llm}
-      - {name: challenge_dose, type: string, required: false, source: llm}
-      - {name: challenge_timing, type: string, required: false, source: llm}
-      - {name: evidence_text, type: text, required: true, source: align}
-      - {name: source_location, type: string, required: true, source: structure}
-
-  # -----------------------------------------------------------------------
-  # 1.7 Swine（动物参数）
-  # -----------------------------------------------------------------------
+    - name: model_type
+      type: enum
+      required: true
+      source: llm
+      values:
+      - challenge
+      - normal
+    - name: stressor_name
+      type: string
+      required: false
+      source: llm
+    - name: challenge_method
+      type: string
+      required: false
+      source: llm
+    - name: challenge_dose
+      type: string
+      required: false
+      source: llm
+    - name: challenge_timing
+      type: string
+      required: false
+      source: llm
+    - name: evidence_text
+      type: text
+      required: true
+      source: align
+    - name: source_location
+      type: string
+      required: true
+      source: structure
+    dedup_mode: article
   Swine:
-    display_name: "Swine Animal Parameters"
-    primary_text: physiological_stage
-    description: >
-      Characteristics of the swine subjects used in the experiment,
-      including breed, sex, age, physiological stage, body weight,
-      and sample size.
-    notes: |
-      dedup_mode: exact
-    extraction_guidance: |
-      ## Extraction Rules
+    display_name: Animal Parameters
+    primary_text: breed
+    description: 'Breed, sex, age, physiological stage, initial body weight, and sample
+      size of experimental swine. All parameters must be extracted exclusively from
+      the Materials & Methods section of the paper. Precision is critical: record
+      exact numerical values with units.
 
-      1. breed: Record the full breed/cross designation (e.g.,
-         "Duroc × Landrace × Yorkshire").
-
-      2. sex: Use precise terms when available:
-         - boar (intact male), sow (female that has farrowed),
-           barrow (castrated male), gilt (young female, not farrowed)
-         - male/female (when sex is mentioned but not further specified)
-         - mixed (both sexes present)
-
-      3. age: Initial age at experiment start (e.g., "21 days", "weaned").
-
-      4. physiological_stage: weaned, grower, finisher, gestating, lactating, etc.
-
-      5. initial_body_weight: Include value and unit (e.g., "7.5 ± 0.2 kg").
-
-      6. sample_size: Number of animals per group.
+      '
+    notes: ''
+    extraction_guidance: "## Extraction Rules for Swine\n\n1. SOURCE: Extract ALL\
+      \ parameters SOLELY from the Materials & Methods\n   section. Do not use information\
+      \ from the abstract or results.\n\n2. BREED: Record the exact breed/crossbreed\
+      \ designation as written.\n   If not specified, leave as empty string \"\".\n\
+      \n3. SEX: Use EXACT enum values: boar, sow, barrow, gilt, male, female, mixed.\n\
+      \n4. AGE: Record the exact day-age or physiological stage description.\n\n5.\
+      \ PHYSIOLOGICAL_STAGE: neonatal, suckling, weanling, nursery, growing,\n   finishing,\
+      \ gestating, lactating.\n\n6. INITIAL_BODY_WEIGHT: Record EXACT value with units\
+      \ and variability.\n\n7. SAMPLE_SIZE: Number of animals per group as an integer.\n\
+      \n8. EVIDENCE: Always provide evidence_text and source_location.\n"
     attributes:
-      - {name: breed, type: string, required: true, source: llm}
-      - {name: sex, type: enum, required: false, source: llm,
-         values: [boar, sow, barrow, gilt, male, female, mixed]}
-      - {name: age, type: string, required: false, source: llm}
-      - {name: physiological_stage, type: string, required: false, source: llm}
-      - {name: initial_body_weight, type: string, required: false, source: llm}
-      - {name: sample_size, type: integer, required: false, source: llm}
-      - {name: evidence_text, type: text, required: true, source: align}
-      - {name: source_location, type: string, required: true, source: structure}
-
-  # -----------------------------------------------------------------------
-  # 1.8 Intervention（干预措施）
-  # -----------------------------------------------------------------------
+    - name: breed
+      type: string
+      required: true
+      source: llm
+    - name: sex
+      type: enum
+      required: false
+      source: llm
+      values:
+      - boar
+      - sow
+      - barrow
+      - gilt
+      - male
+      - female
+      - mixed
+    - name: age
+      type: string
+      required: false
+      source: llm
+    - name: physiological_stage
+      type: string
+      required: false
+      source: llm
+    - name: initial_body_weight
+      type: string
+      required: false
+      source: llm
+    - name: sample_size
+      type: integer
+      required: false
+      source: llm
+    - name: evidence_text
+      type: text
+      required: true
+      source: align
+    - name: source_location
+      type: string
+      required: true
+      source: structure
+    dedup_mode: article
   Intervention:
-    display_name: "Intervention / Treatment"
-    primary_text: group_label
-    description: >
-      An experimental treatment applied to a group of animals. Each distinct
-      dose level, administration route, or treatment combination is a separate
-      Intervention entity. Positive antibiotic controls are also recorded here
-      (with substance_name filled), NOT as Alternative entities.
-    notes: |
-      dedup_mode: exact
-    extraction_guidance: |
-      ## Extraction Rules
+    display_name: Intervention / Treatment
+    primary_text: intervention_target
+    description: 'A specific treatment regimen applied to an experimental group, defined
+      by the substance administered, its dose, administration route, duration, and
+      basal diet. Each DISTINCT dose level of the same substance constitutes a separate
+      Intervention entity. Extract exclusively from the Materials & Methods section.
 
-      1. GROUP LABEL: Use the paper's own group designation (e.g., "T1",
-         "500 mg/kg OEO", "Ctrl+Antibiotic").
-
-      2. DOSE: Record dose_value as a numeric value. For composite products,
-         this is the total product addition amount.
-         - 1 ppm = 1 mg/kg; 1% = 10000 mg/kg
-         - Use dose_unit_standard for normalized units (mg/kg_feed, mg/kg_BW,
-           CFU/kg_feed, U/kg_feed); keep original in dose_unit_original.
-
-      3. ANTIBIOTIC CONTROLS: Positive-control antibiotics MUST be recorded as
-         Intervention entities with substance_name filled (e.g.,
-         "Chlortetracycline"). Do NOT create Alternative entities for them.
-
-      4. MULTIPLE DOSES: Each dose level creates a separate Intervention entity.
-
-      5. SAME INTERVENTION, MULTIPLE MODELS: If the same treatment is applied
-         to multiple models (e.g., normal and challenged), create ONE
-         Intervention entity and use multiple applied_to relationships.
-
-      6. SUBSTANCE LINKAGE: For alternative substances, link via the "uses"
-         reference field (NOT substance_name). substance_name is ONLY for
-         antibiotic controls — fill with "Not applicable" for alternatives.
+      '
+    notes: ''
+    extraction_guidance: "## Extraction Rules for Intervention\n\n1. SOURCE: Extract\
+      \ ALL intervention details from M&M section only.\n\n2. ONE INTERVENTION PER\
+      \ DISTINCT DOSE: Create a SEPARATE Intervention\n   entity for EACH dose level\
+      \ of the same substance.\n\n3. intervention_target: The name of the substance\
+      \ that this intervention\n   administers. Must match the standard_name of an\
+      \ Alternative entity.\n\n4. DOSE VALUES: Use EXACT dose value and unit as written.\
+      \ Do NOT convert.\n   If dose is NOT reported, leave dose_value as empty.\n\n\
+      5. ADMINISTRATION_ROUTE (EXACT enum): diet, drinking_water, oral_gavage,\n \
+      \  injection, topical, other.\n\n6. DURATION: Total treatment period (e.g.,\
+      \ \"28 days\").\n\n7. BASAL_DIET: The base diet formulation (e.g., \"corn-soybean\
+      \ meal based diet\").\n\n8. positive_control: If this is an antibiotic positive\
+      \ control, record\n   the antibiotic name AND dose. If not a positive control,\
+      \ leave empty.\n\n9. EVIDENCE: Provide evidence_text and source_location.\n"
     attributes:
-      - {name: group_label, type: string, required: true, source: llm}
-      - {name: dose_value, type: float, required: false, source: llm}
-      - {name: dose_unit_original, type: string, required: false, source: llm}
-      - {name: dose_unit_standard, type: string, required: false, source: llm}
-      - {name: administration_route, type: enum, required: false, source: llm,
-         values: [diet, drinking_water, oral_gavage, injection, topical, other]}
-      - {name: duration, type: string, required: false, source: llm}
-      - {name: basal_diet, type: string, required: false, source: llm}
-      - {name: substance_name, type: string, required: false, source: llm}
-      - {name: evidence_text, type: text, required: true, source: align}
-      - {name: source_location, type: string, required: true, source: structure}
+    - name: intervention_target
+      type: string
+      required: true
+      source: llm
+    - name: dose_value
+      type: float
+      required: false
+      source: llm
+    - name: dose_unit_original
+      type: string
+      required: false
+      source: llm
+    - name: administration_route
+      type: enum
+      required: false
+      source: llm
+      values:
+      - diet
+      - drinking_water
+      - oral_gavage
+      - injection
+      - topical
+      - other
+    - name: duration
+      type: string
+      required: false
+      source: llm
+    - name: basal_diet
+      type: string
+      required: false
+      source: llm
+    - name: positive_control
+      type: string
+      required: false
+      source: llm
+    - name: evidence_text
+      type: text
+      required: true
+      source: align
+    - name: source_location
+      type: string
+      required: true
+      source: structure
     references:
-      - {name: substance, target_entity: Alternative, target_field: standard_name, edge_type: uses}
-      - {name: composite_substance, target_entity: Composite_Product, target_field: product_name, edge_type: uses}
-      - {name: applied_to_model, target_entity: Swine_Model, target_field: stressor_name, edge_type: applied_to}
-
-  # -----------------------------------------------------------------------
-  # 1.9 Control_Group（对照组）
-  # -----------------------------------------------------------------------
+    - name: intervention_target
+      target_entity: Alternative
+      target_field: standard_name
+      edge_type: uses
+    dedup_mode: article
   Control_Group:
-    display_name: "Control Group"
+    display_name: Control Group
     primary_text: group_name
-    description: >
-      A control/comparison group in the experiment. Must be accurately
-      classified by its role: negative_control, positive_control,
-      basal_control, sham, or challenged_control.
-    notes: |
-      dedup_mode: exact
-    extraction_guidance: |
-      ## Extraction Rules
+    description: 'A reference group against which treatment effects are compared.
+      Each experiment typically has exactly ONE negative control (untreated, basal
+      diet) and optionally ONE positive control (antibiotic-treated). In challenge
+      studies, a challenged control group serves as the comparison baseline. Do NOT
+      create multiple Control_Group entities for the same logical control group even
+      if it is mentioned in multiple sentences.
 
-      1. GROUP TYPE SELECTION:
-         - negative_control: Absolute blank (no treatment, no challenge)
-         - positive_control: Antibiotic or known-effective substance control
-         - basal_control: Basal diet control (nutrition trials only)
-         - sham: Sham-treated (e.g., saline injection)
-         - challenged_control: Challenged/stressed model control (receives
-           challenge but no alternative intervention)
-
-      2. CRITICAL: In challenge models, the comparison baseline for
-         intervention effects MUST be the challenged_control, NOT the
-         absolute blank (negative_control).
-
-      3. Record the specific group designation as used in the paper.
+      '
+    notes: ''
+    extraction_guidance: "## Extraction Rules for Control_Group\n\n1. IDENTIFY ALL\
+      \ CONTROL GROUPS from the M&M section.\n\n2. GROUP_TYPE (EXACT enum values):\n\
+      \   - negative_control: Untreated, basal diet only, no additive.\n   - positive_control:\
+      \ Antibiotic-treated group.\n   - basal_control: Basal diet without test substance.\n\
+      \   - sham: Sham-treated control (e.g., saline gavage).\n   - challenged_control:\
+      \ Challenged/stressed model control (receives\n     challenge but no alternative\
+      \ intervention).\n\n3. CARDINALITY: Each experiment typically has EXACTLY ONE\
+      \ negative\n   control (negative_control or basal_control) and optionally ONE\n\
+      \   positive control. Do NOT create multiple Control_Group entities\n   for\
+      \ the same logical group.\n\n4. GROUP_NAME: Use the EXACT group label from the\
+      \ paper (e.g., \"NC\",\n   \"PC\", \"CON\", \"Control\"). CRITICAL — DO NOT\
+      \ use doses or substance\n   names as group names. For example, \"0 g/kg MA\"\
+      \ is WRONG; use\n   \"CON\" or \"Basal diet\" instead. The group_name must reflect\
+      \ the\n   GROUP LABEL, not the treatment or dose.\n\n5. In challenge studies,\
+      \ the CHALLENGED control is the baseline for\n   evaluating intervention protective\
+      \ effects.\n\n6. EVIDENCE: Provide evidence_text and source_location.\n"
     attributes:
-      - {name: group_name, type: string, required: true, source: llm}
-      - {name: group_type, type: enum, required: true, source: llm,
-         values: [negative_control, positive_control, basal_control, sham, challenged_control]}
-      - {name: description, type: text, required: false, source: llm}
-      - {name: evidence_text, type: text, required: true, source: align}
-      - {name: source_location, type: string, required: true, source: structure}
-
-  # -----------------------------------------------------------------------
-  # 1.10 Tissue_Site（组织部位）
-  # -----------------------------------------------------------------------
+    - name: group_name
+      type: string
+      required: true
+      source: llm
+    - name: group_type
+      type: enum
+      required: true
+      source: llm
+      values:
+      - negative_control
+      - positive_control
+      - basal_control
+      - sham
+      - challenged_control
+    - name: description
+      type: text
+      required: false
+      source: llm
+    - name: evidence_text
+      type: text
+      required: true
+      source: align
+    - name: source_location
+      type: string
+      required: true
+      source: structure
+    dedup_mode: article
   Tissue_Site:
-    display_name: "Tissue / Sampling Site"
+    display_name: Tissue / Sampling Site
     primary_text: site_name
-    description: >
-      The biological site where a sample was collected or a measurement was
-      taken. Includes organs, tissues, biofluids, digesta, feces, and the
-      conceptual "Whole body" for macroscopic production metrics.
-    extraction_guidance: |
-      ## Extraction Rules
+    description: 'The anatomical site from which a biological sample was collected
+      or where a measurement was taken. This includes intestinal segments and their
+      contents, internal organs, blood fractions, feces, and other biological specimens.
+      Each distinct sampling location is a separate Tissue_Site entity. Macroscopic
+      production metrics (ADG, ADFI, F:G, mortality) point to site_name="Whole body",
+      site_category="whole_organism".
 
-      1. Use standard anatomical names (e.g., "cecal content", "jejunal mucosa",
-         "serum", "liver").
-
-      2. site_category mapping:
-         - content: digesta from GI tract (cecal, colonic, ileal content)
-         - mucosa: mucosal scrapings/tissue (jejunal mucosa, ileal mucosa)
-         - serum: blood serum or plasma
-         - tissue: solid organ/tissue (liver, spleen, muscle)
-         - feces: fecal samples
-         - whole_organism: macroscopic performance metrics (ADG, ADFI, F:G, mortality)
-
-      3. ALL macroscopic production performance indicators (ADG, ADFI, F:G,
-         mortality) MUST point to site_name = "Whole body",
-         site_category = "whole_organism".
+      '
+    notes: ''
+    extraction_guidance: "## Extraction Rules for Tissue_Site\n\n1. SOURCE: Extract\
+      \ from M&M where sample collection is described.\n\n2. SITE_NAME: Use standardized\
+      \ anatomical names:\n   - Intestinal segments: \"duodenum\", \"jejunum\", \"\
+      ileum\", \"cecum\", \"colon\"\n   - Intestinal contents: \"cecal content\",\
+      \ \"ileal content\", etc.\n   - Intestinal tissues: \"jejunal mucosa\", \"ileal\
+      \ mucosa\", etc.\n   - Organs: \"liver\", \"spleen\", \"kidney\", \"lung\",\
+      \ \"heart\"\n   - Blood: \"serum\", \"plasma\", \"whole blood\"\n   - Other:\
+      \ \"feces\", \"urine\", \"muscle (longissimus dorsi)\"\n\n3. SITE_CATEGORY:\
+      \ content, mucosa, serum, tissue, feces, whole_organism.\n\n4. SPECIFICITY:\
+      \ Be as specific as the paper allows. \"ileal mucosa\", not just \"ileum\".\n\
+      \n5. Whole body for macro metrics: ADG, ADFI, F:G, FBW, mortality → \"Whole\
+      \ body\".\n"
     attributes:
-      - {name: site_name, type: string, required: true, source: llm}
-      - {name: site_category, type: enum, required: true, source: llm,
-         values: [content, mucosa, serum, tissue, feces, whole_organism]}
-      - {name: evidence_text, type: text, required: true, source: align}
-      - {name: source_location, type: string, required: true, source: structure}
-
-  # -----------------------------------------------------------------------
-  # 1.11 Indicator（指标）
-  # -----------------------------------------------------------------------
+    - name: site_name
+      type: string
+      required: true
+      source: llm
+    - name: site_category
+      type: enum
+      required: false
+      source: llm
+      values:
+      - content
+      - mucosa
+      - serum
+      - tissue
+      - feces
+      - whole_organism
+    - name: evidence_text
+      type: text
+      required: true
+      source: align
+    - name: source_location
+      type: string
+      required: true
+      source: structure
+    dedup_mode: fuzzy
   Indicator:
-    display_name: "Indicator / Measured Parameter"
-    primary_text: standard_name
-    description: >
-      A biological, physiological, or biochemical parameter measured in the
-      experiment. Each indicator is bound to a Tissue_Site (via measured_in)
-      and a Method (via uses_method).
-    extraction_guidance: |
-      ## Extraction Rules
+    display_name: Measured Indicator
+    primary_text: abbreviation
+    description: 'A quantitative endpoint or parameter measured in the study. This
+      encompasses growth performance, nutrient digestibility, intestinal morphology,
+      microbiome diversity and composition, metabolome concentrations, blood biochemistry,
+      immune markers, antioxidant capacity, and other biological measurements. Each
+      unique combination of indicator + tissue site + measurement method constitutes
+      a separate Indicator entity and must be linked to its corresponding Tissue_Site
+      via the measured_in relationship.
 
-      1. INDICATOR CATEGORIES:
-         - macro_phenotype: Growth performance (ADG, ADFI, F:G, FBW),
-           digestibility, diarrhea rate, mortality, VH/CD
-         - microbiome: Alpha diversity (Shannon, Chao1), beta diversity
-           (PCoA/NMDS), phylum/genus/species relative abundance
-         - metabolome: SCFAs (acetate, propionate, butyrate), bile acids,
-           biogenic amines
-         - molecular: Gene/protein expression (ZO-1, Claudin-1, TNF-α, etc.)
+      '
+    notes: ''
+    extraction_guidance: '## Extraction Rules for Indicator
 
-      2. Each Indicator MUST specify:
-         - Sampling site (via measured_in reference to Tissue_Site)
-         - Measurement method (via uses_method reference to Method)
 
-      3. For digestibility: specify type (apparent total tract, AID, SID)
-         and nutrient (DM, CP, GE, etc.) in the standard_name.
+      ### 0. GENERAL RULES
 
-      4. For gut morphology: specify intestinal segment and metric
-         (e.g., "Jejunal VH", "Ileal CD", "Duodenal VH/CD").
+      - Extract ONLY from the Materials & Methods section.
 
-      5. evidence_text MUST include sentences describing the measurement
-         method, sampling site, and procedure (1-3 sentences).
+      - Each Indicator MUST specify a measured_in Tissue_Site.
+
+      - Each Indicator MUST be linked to its measurement Method.
+
+      - Provide evidence_text: 1-3 sentences from M&M describing measurement.
+
+
+      ### 1. INDICATOR CATEGORIES
+
+      - macro_phenotype: ADG, ADFI, F:G, FBW (growth performance)
+
+      - microbiome: Shannon, Chao1, relative abundance of [taxon]
+
+      - metabolome: SCFAs (acetate, propionate, butyrate), bile acids
+
+      - molecular: Gene/protein expression (ZO-1, Claudin-1, TNF-α, etc.)
+
+
+      ### 2. MICROBIOME DIVERSITY INDICATORS (DO NOT SKIP):
+
+      These ARE valid indicators:
+
+      - Alpha diversity: Shannon, Simpson, Chao1, ACE, Observed species, Faith''s
+      PD
+
+      - Beta diversity: PCoA, NMDS, PERMANOVA, Bray-Curtis, UniFrac
+
+      - Differential abundance: LEfSe, DESeq2, ANCOM
+
+      Each must have: standard_name, abbreviation, unit (e.g., "index"),
+
+      measurement_method (e.g., "16S rRNA sequencing"), measured_in
+
+      (e.g., "cecal content"), and indicator_category="microbiome".
+
+
+      ### 3. EVIDENCE REQUIREMENT
+
+      For EVERY Indicator, copy 1-3 sentences from M&M that describe the
+
+      measurement method, sampling site, and operational steps into
+
+      evidence_text. If the same paragraph describes multiple indicators,
+
+      copy it into each (one-to-many copy principle).
+
+      '
     attributes:
-      - {name: standard_name, type: string, required: true, source: llm}
-      - {name: abbreviation, type: string, required: false, source: llm}
-      - {name: unit, type: string, required: false, source: llm}
-      - {name: indicator_category, type: enum, required: true, source: llm,
-         values: [macro_phenotype, microbiome, metabolome, molecular]}
-      - {name: evidence_text, type: text, required: true, source: align}
-      - {name: source_location, type: string, required: true, source: structure}
+    - name: standard_name
+      type: string
+      required: true
+      source: llm
+    - name: abbreviation
+      type: string
+      required: true
+      source: llm
+    - name: unit
+      type: string
+      required: false
+      source: llm
+    - name: measurement_method
+      type: string
+      required: false
+      source: llm
+    - name: indicator_category
+      type: enum
+      required: false
+      source: llm
+      values:
+      - macro_phenotype
+      - microbiome
+      - metabolome
+      - molecular
+    - name: measured_in
+      type: string
+      required: false
+      source: llm
+    - name: evidence_text
+      type: text
+      required: true
+      source: align
+    - name: source_location
+      type: string
+      required: true
+      source: structure
     references:
-      - {name: measured_in_site, target_entity: Tissue_Site, target_field: site_name, edge_type: measured_in}
-      - {name: measurement_method, target_entity: Method, target_field: method_name, edge_type: uses_method}
-
-  # -----------------------------------------------------------------------
-  # 1.12 Method（测定方法）
-  # -----------------------------------------------------------------------
+    - name: measured_in
+      target_entity: Tissue_Site
+      target_field: site_name
+      edge_type: measured_in
+    - name: measurement_method
+      target_entity: Method
+      target_field: method_name
+      edge_type: uses_method
+    dedup_mode: exact
   Method:
-    display_name: "Measurement Method"
+    display_name: Assay / Measurement Method
     primary_text: method_name
-    description: >
-      The analytical or experimental method used to measure an indicator.
-      Includes molecular techniques (qPCR, Western blot, ELISA), sequencing
-      (16S rRNA), chromatography (GC, HPLC), and basic measurements (weighing).
-    extraction_guidance: |
-      ## Extraction Rules
+    description: 'A biological experimental method used to measure an indicator or
+      to process biological samples. This entity MUST ONLY capture BIOLOGICAL EXPERIMENTAL
+      METHODS — not statistical tests, not bioinformatics analysis tools, not generic
+      laboratory operations. Each Method entity is linked to the Indicator(s) it measures
+      via the uses_method relationship.
 
-      1. Record the specific method name (e.g., "qPCR", "ELISA", "16S rRNA
-         gene sequencing", "GC-MS").
-
-      2. Include instrument details, kit names, and software versions in the
-         description field when available.
-
-      3. If multiple methods are used for one indicator, create multiple
-         uses_method relationships.
+      '
+    extraction_guidance: "## Extraction Rules for Method\n\n### WHAT TO EXTRACT (specific\
+      \ analytical/laboratory methods):\n- Named techniques with instruments: \"gas\
+      \ chromatography (CP-3800, Varian)\",\n  \"16S rRNA sequencing (Illumina NovaSeq)\"\
+      \n- Specific assay kits: \"ELISA (R&D Systems)\", \"BCA protein assay\",\n \
+      \ \"PAS staining\"\n- Named analytical procedures: \"proximate analysis (AOAC)\"\
+      ,\n  \"gross energy determination (bomb calorimetry)\"\n- DNA/RNA extraction:\
+      \ \"Fecal DNA Isolation Kit (Omega D4015-01)\"\n\n### METHODS THAT MUST NOT\
+      \ BE EXTRACTED (BLACKLIST):\n\n- STATISTICAL TESTS: T-test, ANOVA, MIXED procedure,\
+      \ GLM, Tukey's\n  test, Duncan's multiple range test, Kruskal-Wallis test,\n\
+      \  Mann-Whitney U test, chi-square test — these are statistical\n  analysis\
+      \ methods, not experimental methods.\n- BIOINFORMATICS/STATISTICAL ANALYSIS\
+      \ TOOLS: LEfSe analysis, PCoA,\n  NMDS, alpha diversity analysis, PERMANOVA,\
+      \ ANOSIM, STAMP,\n  DESeq2, edgeR — these are data analysis tools, not experimental\
+      \ methods.\n- GENERIC OPERATIONS: \"weighing\", \"counting\", \"measuring\"\
+      ,\n  \"recording\", \"sampling\", \"homogenizing\" — too generic.\n- SOFTWARE\
+      \ TOOLS: SAS, SPSS, R, ImageJ, GraphPad Prism, QIIME2,\n  Mothur, USEARCH —\
+      \ these are software used to RUN methods, not\n  methods themselves.\n- CALCULATION\
+      \ FORMULAS: any formula or equation (e.g.,\n  \"ADG = (final weight - initial\
+      \ weight) / days\").\n- STANDARD REFERENCE NUMBERS: e.g., \"AOAC method 930.15\"\
+      , \"ISO 12345\".\n  Use the descriptive name instead (e.g., \"oven drying method\"\
+      ).\n- GENERIC OBSERVATION/RECORDING: \"growth performance measurement\",\n \
+      \ \"daily weighing\", \"feed recording\", \"counting\".\n- SOFTWARE-BASED IMAGE\
+      \ ANALYSIS WITHOUT SPECIFIC HISTOLOGICAL TECHNIQUE:\n  \"Image analysis for\
+      \ morphology\", \"image analysis with ImageJ\".\n- SIMPLE SCORING SYSTEMS: \"\
+      fecal scoring\", \"diarrhea scoring\",\n  \"health scoring\" — subjective assessments,\
+      \ not analytical methods.\n\n### DECISION RULE: \"Does this describe how a biological\
+      \ sample was\nprocessed or a biological parameter was physically measured?\"\
+      \nIf NO → do NOT extract as a Method entity.\n"
+    notes: "CRITICAL RULES:\n- THIS ENTITY ONLY CAPTURES BIOLOGICAL EXPERIMENTAL METHODS.\n\
+      - Explicitly NOT Methods (blacklist):\n  * Statistical tests: T-test, ANOVA,\
+      \ MIXED procedure, GLM, Tukey's,\n    Duncan's, Kruskal-Wallis, Mann-Whitney\
+      \ U, chi-square.\n  * Bioinformatics: LEfSe, PCoA, NMDS, alpha diversity analysis,\n\
+      \    PERMANOVA, DESeq2, edgeR, STAMP.\n  * Generic operations: \"weighing\"\
+      , \"counting\", \"measuring\".\n  * Software tools: SAS, SPSS, ImageJ, GraphPad\
+      \ Prism, QIIME2.\n- If the method involves a commercial kit, record the kit\
+      \ name and\n  manufacturer in the description field.\n"
     attributes:
-      - {name: method_name, type: string, required: true, source: llm}
-      - {name: description, type: text, required: false, source: llm}
-      - {name: evidence_text, type: text, required: true, source: align}
-      - {name: source_location, type: string, required: true, source: structure}
-
-  # -----------------------------------------------------------------------
-  # 1.13 Result（结果）
-  # -----------------------------------------------------------------------
+    - name: method_name
+      type: string
+      required: true
+      source: llm
+    - name: description
+      type: text
+      required: false
+      source: llm
+    - name: evidence_text
+      type: text
+      required: true
+      source: align
+    - name: source_location
+      type: string
+      required: true
+      source: structure
+    dedup_mode: exact
   Result:
-    display_name: "Experimental Result"
-    primary_text: p_value_original_text
-    description: >
-      A statistically evaluated experimental result comparing an intervention
-      group to a control group. Each Result is linked to an Indicator
-      (via corresponds_to), Tissue_Site (via occurs_in), and Control_Group
-      (via compared_to). The direction of effect is expressed through the
-      relationship type from Intervention to Result (increases/decreases,
-      upregulates/downregulates, enriches/depletes, affects).
-    notes: |
-      dedup_mode: exact
-    extraction_guidance: |
-      ## Extraction Rules
+    display_name: Statistical Result
+    primary_text: indicator_abbreviation
+    description: 'A statistically evaluated comparison between a treatment group and
+      a control group, structured as a triple: tissue site + indicator + direction
+      of change. All results with any statistical comparison reported in the paper
+      must be extracted, regardless of P-value magnitude. The extraction follows a
+      4-tier hierarchy from macro-phenotype down to molecular expression.
 
-      1. EXTRACT ALL STATISTICAL COMPARISONS regardless of P-value.
-
-      2. DIRECTION: Effect direction is expressed SOLELY through the
-         Intervention→Result relationship type, NOT in Result attributes:
-         - increases/decreases: continuous numeric phenotypes
-         - upregulates/downregulates: gene/protein expression
-         - enriches/depletes: microbial relative abundance
-         - affects: catch-all or non-significant results
-
-      3. COMPARISON BASELINE: Only extract comparisons vs Control_Group
-         (via compared_to reference). In challenge models, the baseline
-         MUST be the challenged_control. Do NOT extract intervention-vs-
-         intervention comparisons.
-
-      4. SIGNIFICANCE:
-         - p_less_0.01: P < 0.01
-         - p_less_0.05: P < 0.05
-         - trend_0.05_0.1: 0.05 ≤ P < 0.10
-         - not_significant: P ≥ 0.10 or not significant
-         Record the EXACT original P-value text in p_value_original_text.
-
-      5. MULTIPLE TIME POINTS: Each time point creates a separate Result entity.
-
-      6. evidence_text: Copy the EXACT original English sentence(s) describing
-         this result (1-2 sentences). If one sentence contains multiple results,
-         copy it into each Result entity.
+      '
+    notes: ''
+    extraction_guidance: "## Extraction Rules for Result\n\n### 0. GENERAL RULES\n\
+      - Extract EVERY result that reports a statistical comparison,\n  regardless\
+      \ of P-value magnitude or significance.\n- Each Result is a triple: (tissue_site,\
+      \ indicator, direction).\n- If one sentence describes multiple indicators, SPLIT\
+      \ into separate\n  Result entities — one per indicator. Copy the same evidence_text\n\
+      \  sentence into each.\n- Every Result MUST be linked to its Indicator (corresponds_to),\n\
+      \  Tissue_Site (occurs_in), and Control_Group (compared_to).\n\n### 1. COMPARISON\
+      \ BASELINE\n- The baseline must be \"treatment vs control\" (horizontal comparison).\n\
+      - For challenge models: the comparison baseline MUST be the\n  challenged_control,\
+      \ NOT the unchallenged negative control.\n\n### 2. RELATION TYPE SELECTION (set\
+      \ via relation_type field):\n- Numerical indicators (growth, digestibility,\
+      \ SCFA, blood):\n  → \"increases\" or \"decreases\"\n- Gene/protein expression:\
+      \ → \"upregulates\" or \"downregulates\"\n- Microbial abundance: → \"enriches\"\
+      \ or \"depletes\"\n- Unclear mechanism: → \"affects\"\n\n### 3. ATTRIBUTE FILLING\n\
+      - indicator_abbreviation: EXACT abbreviation matching an Indicator entity.\n\
+      - direction: increased / decreased / no_significant_change.\n- p_value_original_text:\
+      \ EXACT text (e.g., \"P < 0.05\", \"P = 0.023\").\n- significance_level: p_less_0.01\
+      \ / p_less_0.05 / trend_0.05_0.1 / not_significant.\n- evidence_text: EXACTLY\
+      \ 1-2 original sentences from Results or\n  figure/table captions that directly\
+      \ describe this result.\n  Copy verbatim — do NOT summarize or paraphrase.\n\
+      - compared_to_group: group_name of the Control_Group used as baseline.\n- tissue_site:\
+      \ site_name of the Tissue_Site where this result was measured.\n"
     attributes:
-      - {name: p_value, type: float, required: false, source: llm}
-      - {name: p_value_original_text, type: string, required: true, source: llm}
-      - {name: corrected_significance, type: string, required: false, source: llm}
-      - {name: effect_size, type: string, required: false, source: llm}
-      - {name: time_point, type: string, required: false, source: llm}
-      - {name: subgroup, type: string, required: false, source: llm}
-      - {name: significance_level, type: enum, required: true, source: llm,
-         values: [p_less_0.01, p_less_0.05, trend_0.05_0.1, not_significant]}
-      - {name: evidence_text, type: text, required: true, source: align}
-      - {name: source_location, type: string, required: true, source: structure}
+    - name: indicator_abbreviation
+      type: string
+      required: true
+      source: llm
+    - name: tissue_site
+      type: string
+      required: false
+      source: llm
+    - name: direction
+      type: enum
+      required: true
+      source: llm
+      values:
+      - increased
+      - decreased
+      - no_significant_change
+    - name: relation_type
+      type: enum
+      required: true
+      source: llm
+      values:
+      - increases
+      - decreases
+      - upregulates
+      - downregulates
+      - enriches
+      - depletes
+      - affects
+    - name: p_value
+      type: float
+      required: false
+      source: llm
+    - name: p_value_original_text
+      type: string
+      required: false
+      source: llm
+    - name: corrected_significance
+      type: string
+      required: false
+      source: llm
+    - name: effect_size
+      type: string
+      required: false
+      source: llm
+    - name: time_point
+      type: string
+      required: false
+      source: llm
+    - name: subgroup
+      type: string
+      required: false
+      source: llm
+    - name: significance_level
+      type: enum
+      required: true
+      source: llm
+      values:
+      - p_less_0.01
+      - p_less_0.05
+      - trend_0.05_0.1
+      - not_significant
+    - name: compared_to_group
+      type: string
+      required: false
+      source: llm
+    - name: evidence_text
+      type: text
+      required: true
+      source: align
+    - name: source_location
+      type: string
+      required: true
+      source: structure
     references:
-      - {name: result_indicator, target_entity: Indicator, target_field: standard_name, edge_type: corresponds_to}
-      - {name: result_site, target_entity: Tissue_Site, target_field: site_name, edge_type: occurs_in}
-      - {name: result_control, target_entity: Control_Group, target_field: group_name, edge_type: compared_to}
+    - name: indicator_abbreviation
+      target_entity: Indicator
+      target_field: abbreviation
+      edge_type: corresponds_to
+    - name: tissue_site
+      target_entity: Tissue_Site
+      target_field: site_name
+      edge_type: occurs_in
+    - name: compared_to_group
+      target_entity: Control_Group
+      target_field: group_name
+      edge_type: compared_to
+    dedup_mode: article

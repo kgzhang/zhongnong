@@ -25,7 +25,7 @@ from src.extraction import DocumentExtractionResult
 @dataclass
 class GraphNode:
     id: str
-    labels: list[str]           # Neo4j labels e.g. ["Alternative", "Entity"]
+    labels: list[str]           # Neo4j labels e.g. ["Chemical", "Entity"]
     properties: dict[str, Any]  # all attributes
     source_pmids: list[str] = field(default_factory=list)
 
@@ -86,7 +86,7 @@ def entity_global_id(
     Parameters
     ----------
     entity_type:
-        The entity class name (e.g. ``"Alternative"``, ``"Result"``).
+        The entity class name (e.g. ``"Chemical"``, ``"Measurement"``).
     primary_text:
         The primary identifying text (name) of the entity.
     article_pmid:
@@ -152,8 +152,7 @@ def build_graph(
 
             # Use the entity definition's primary_text field as the identity
             # key, falling back to extraction_text.  This ensures e.g. that an
-            # Alternative extracted as {"Alternative": "MA"} with
-            # standard_name="microbe-derived antioxidants" gets the same
+            # entity extracted with an abbreviation gets the same
             # global ID as one extracted with the canonical name.
             identity_key = ext.extraction_text
             if registry is not None:
@@ -444,6 +443,14 @@ def _resolve_edges(
             for ref in entity_def.references:
                 ref_value = _get_attr(ext.attributes, ref.name)
                 if ref_value is None:
+                    # Auto-detect: scan all attribute values for a match
+                    # against target entity names.  LLMs often output
+                    # semantically meaningful values (e.g. "ADG" for
+                    # indicator) without using the exact reference field name.
+                    ref_value = _auto_detect_ref(
+                        ext, ref, nodes_by_id, registry, global_types
+                    )
+                if ref_value is None:
                     continue
 
                 target_id = entity_global_id(
@@ -477,6 +484,74 @@ def _get_attr(attributes: dict[str, Any] | None, key: str) -> Any:
     if attributes is None:
         return None
     return attributes.get(key)
+
+
+def _auto_detect_ref(
+    ext: Any,
+    ref: Any,
+    nodes_by_id: dict[str, GraphNode],
+    registry: Any,
+    global_types: frozenset[str] | set[str] | None = None,
+) -> str | None:
+    """Auto-detect a cross-entity reference when the exact reference field
+    name was not populated by the LLM.
+
+    Scans the extraction's attributes for values that match a target entity's
+    name (by exact or normalized comparison).  Used as a fallback in
+    ``_resolve_edges``.
+
+    Returns the **identity key** of the matched target node, so that
+    ``entity_global_id()`` produces the same ID the target node already has.
+    When the target entity has a ``primary_text`` field, the identity key is
+    that attribute's value; otherwise it is the extraction_text.
+    """
+    attrs = ext.attributes or {}
+    target_type = ref.target_entity
+
+    # Determine the identity-key attribute for the target entity type
+    pt_attr: str | None = None
+    if registry is not None:
+        try:
+            tgt_ed = registry.entity_def(target_type)
+            pt_attr = tgt_ed.primary_text
+        except (KeyError, AttributeError):
+            pass
+
+    def _identity_key(node: GraphNode) -> str:
+        """Get the identity key for *node* consistent with build_graph."""
+        if pt_attr and node.properties.get(pt_attr):
+            return str(node.properties[pt_attr])
+        return node.properties.get("name", "")
+
+    # Strategy 1: scan all attribute string values for a match against any
+    # existing node of the target entity type
+    for attr_val in attrs.values():
+        if not isinstance(attr_val, str) or not attr_val.strip():
+            continue
+        v = attr_val.strip()
+        for node in nodes_by_id.values():
+            if node.properties.get("entity_type") != target_type:
+                continue
+            node_name = node.properties.get("name", "")
+            if (node_name.lower() == v.lower() or
+                _normalize_name(node_name) == _normalize_name(v)):
+                return _identity_key(node)
+
+    # Strategy 2: try matching source extraction_text against target node names
+    # by word overlap (e.g., "thymol" in Intervention → "thymol" in Alternative)
+    src_text = ext.extraction_text.strip()
+    src_norm = _normalize_name(src_text)
+    for node in nodes_by_id.values():
+        if node.properties.get("entity_type") != target_type:
+            continue
+        node_name = node.properties.get("name", "")
+        node_norm = _normalize_name(node_name)
+        if node_norm and src_norm and (node_norm == src_norm or
+                                       node_norm in src_norm or
+                                       src_norm in node_norm):
+            return _identity_key(node)
+
+    return None
 
 
 def _add_edge(

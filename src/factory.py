@@ -43,6 +43,7 @@ def create_model(
     # Merge any extra provider kwargs from config
     kwargs.update({k: v for k, v in config.provider_kwargs.items()
                    if k not in ("api_key", "base_url")})
+    kwargs["thinking_enabled"] = settings.llm_thinking_enabled
 
     model = OpenAICompatProvider(**kwargs)
 

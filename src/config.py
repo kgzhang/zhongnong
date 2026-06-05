@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     llm_max_retries: int = 3
     llm_temperature: float = 0.1
     llm_max_tokens: int = 16384
+    llm_thinking_enabled: bool = Field(
+        default=True,
+        validation_alias="ZN_LLM_THINKING_ENABLED",
+        description="Enable chain-of-thought thinking mode (disable for batch processing)",
+    )
 
     # Pipeline
     max_char_buffer: int = 8000

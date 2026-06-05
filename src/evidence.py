@@ -16,7 +16,7 @@ from src.data import Extraction
 def derive_evidence(
     extraction: Extraction,
     document_text: str,
-    context_chars: int = 100,
+    context_chars: int = 300,
 ) -> str:
     """Return the verbatim source text surrounding *extraction*'s character interval.
 
@@ -38,7 +38,7 @@ def derive_evidence(
 def derive_evidence_batch(
     extractions: list[Extraction],
     document_text: str,
-    context_chars: int = 100,
+    context_chars: int = 300,
 ) -> None:
     """Set ``evidence_text`` on every extraction in *extractions*.
 
@@ -69,7 +69,7 @@ class EvidenceExtractor:
         self,
         extraction: Extraction,
         document_text: str,
-        context_chars: int = 100,
+        context_chars: int = 300,
     ) -> str:
         """Return verbatim evidence for a single extraction."""
         return derive_evidence(extraction, document_text, context_chars)
@@ -78,7 +78,7 @@ class EvidenceExtractor:
         self,
         extractions: list[Extraction],
         document_text: str,
-        context_chars: int = 100,
+        context_chars: int = 300,
     ) -> None:
         """Set evidence_text on a batch of extractions."""
         derive_evidence_batch(extractions, document_text, context_chars)

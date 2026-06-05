@@ -337,9 +337,16 @@ def _write_relationships_csv(
     """Write relationships.csv with all cross-entity edges for manual validation.
 
     Derives edges from:
-    - Entity definition ``references`` (e.g., Result → Indicator)
-    - Entity definition ``inline_relations`` (e.g., Composite_Product → Alternative)
-    - Attribute-based references (e.g., Indicator.measurement_method → Method)
+
+    - Entity definition ``references`` (e.g., Result → Indicator).  Reference
+      fields use the naming convention ``<role>_<target>`` (e.g.
+      ``result_indicator``).  The field is looked up first in ``attributes``
+      (where it would be if the LLM output it directly), then falls back to
+      ``primary_text`` / ``extraction_text`` for auto-linking.
+    - Entity definition ``inline_relations`` (e.g., Composite_Product →
+      Alternative via ``components``).
+    - Attribute-based references: any attribute whose value matches a
+      ``primary_text`` value of a known entity type.
     """
     import csv as _csv
 
@@ -396,9 +403,18 @@ def _write_relationships_csv(
             try:
                 ed = registry.entity_def(etype)
 
-                # From references
+                # From references — try the reference field name first,
+                # then auto-detect from primary_text / extraction_text
                 for ref in ed.references:
                     val = attrs.get(ref.name)
+                    if not val or not isinstance(val, str) or not val.strip():
+                        # Fallback: auto-link via primary_text of target entity
+                        # e.g. if Intervention has extraction_text = "OEO 500 mg/kg"
+                        # and there's an Alternative with standard_name = "OEO",
+                        # auto-detect the uses relationship
+                        val = _auto_detect_reference(
+                            ext, ref, lookup, normalized_lookup
+                        )
                     if val and isinstance(val, str) and val.strip():
                         found = _fuzzy_find(ref.target_entity, val.strip())
                         rows.append({
@@ -455,6 +471,60 @@ def _write_relationships_csv(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _auto_detect_reference(
+    ext: Any,
+    ref: Any,
+    lookup: dict,
+    normalized_lookup: dict,
+) -> str | None:
+    """Auto-detect cross-entity references when the LLM didn't output a
+    dedicated reference field.
+
+    Uses the entity's own extraction_text and attributes (abbreviation,
+    standard_name, primary_text) to find matching target entities.
+
+    Strategies:
+    1. Check if the source entity's primary_text matches a target entity name
+    2. Check all attribute values for matches against target entity names
+    3. For Intervention→Alternative: check extraction_text for substance names
+    """
+    etype = ext.extraction_class
+    attrs = ext.attributes or {}
+    target_type = ref.target_entity
+
+    # Strategy 1: primary_text of source matches a target entity's primary_text
+    # (e.g., Result's extraction_text matches Indicator's abbreviation)
+    src_text = ext.extraction_text.strip()
+    if (target_type, src_text.lower()) in lookup:
+        return src_text
+
+    # Strategy 2: check each attribute value — if it matches a target entity
+    # name, use that as the reference value
+    for attr_val in attrs.values():
+        if not isinstance(attr_val, str) or not attr_val.strip():
+            continue
+        v = attr_val.strip()
+        if (target_type, v.lower()) in lookup:
+            return v
+        vn = _normalize_key(v)
+        if (target_type, vn) in normalized_lookup:
+            return v
+
+    # Strategy 3: word-overlap between source extraction_text and target names
+    src_words = set(w for w in re.split(r'[\s_\-]+', src_text.lower())
+                    if len(w) > 2)
+    if len(src_words) >= 1:
+        for (et, k), _ in lookup.items():
+            if et != target_type:
+                continue
+            k_words = set(w for w in re.split(r'[\s_\-]+', k) if len(w) > 2)
+            if src_words & k_words:
+                # Found a word overlap — use the matched target name
+                return k
+
+    return None
 
 
 def _resolve_namespace(root) -> dict[str, str]:

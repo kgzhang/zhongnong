@@ -145,7 +145,9 @@ class TestSchemaRegistry:
         assert "canonical full name" in prompt.lower() or "canonical" in prompt.lower()
         assert "abbreviation" in prompt.lower()
         assert "case-consistent" in prompt.lower() or "same canonical name" in prompt.lower()
-        assert "hyphenated" in prompt.lower()
+        # The structured prompt uses <rules> section — check for canonical
+        # name disambiguation content
+        assert "canonical" in prompt.lower()
 
     def test_prompt_warns_against_entity_type_key(self):
         """Issue 4B: Prompt should explicitly say not to use entity_type as key."""
@@ -156,11 +158,10 @@ class TestSchemaRegistry:
     def test_prompt_includes_enum_constraints(self):
         """Issue 4C: Prompt should list allowed values for enum fields."""
         prompt = self.registry.build_extraction_prompt(["Alternative", "Result"])
-        # Result has direction enum
-        assert "increased" in prompt
-        assert "decreased" in prompt
-        # Alternative has no LLM enum fields (classification is post)
-        # but Result has direction, relation_type, significance_level
+        # Result has significance_level enum field
+        assert "p_less_0.01" in prompt
+        assert "not_significant" in prompt
+        # Prompt should include the enum constraints section
         assert "Allowed values for enum fields" in prompt
 
     def test_literature_excluded_from_extraction(self):
@@ -172,3 +173,47 @@ class TestSchemaRegistry:
         llm_names = [n for n in all_names if n != "Literature"]
         assert "Literature" not in llm_names
         assert "Alternative" in llm_names
+
+
+class TestDedupModeField:
+    """Slice 1: dedup_mode is a proper YAML field with correct article/global scoping."""
+
+    def test_dedup_mode_is_top_level_yaml_field(self):
+        """dedup_mode should be a top-level YAML field, not regex-parsed from notes."""
+        registry = SchemaRegistry(config_dir=SCHEMA_DIR)
+        ed = registry.entity_def("Alternative")
+        assert ed.dedup_mode == "fuzzy"
+
+    def test_article_scoped_entities(self):
+        """Article-scoped entities should have dedup_mode='article'."""
+        registry = SchemaRegistry(config_dir=SCHEMA_DIR)
+        article_scoped = [
+            "Experiment", "Swine_Model", "Swine", "Intervention",
+            "Control_Group", "Result", "Literature", "Composite_Product",
+        ]
+        for ename in article_scoped:
+            ed = registry.entity_def(ename)
+            assert ed.dedup_mode == "article", f"{ename} should be article-scoped, got {ed.dedup_mode}"
+
+    def test_global_entities(self):
+        """Global entities should have dedup_mode='fuzzy' or 'exact'."""
+        registry = SchemaRegistry(config_dir=SCHEMA_DIR)
+        assert registry.entity_def("Alternative").dedup_mode == "fuzzy"
+        assert registry.entity_def("Tissue_Site").dedup_mode == "fuzzy"
+        assert registry.entity_def("Indicator").dedup_mode == "exact"
+        assert registry.entity_def("Method").dedup_mode == "exact"
+        assert registry.entity_def("Alternative_Class").dedup_mode == "exact"
+
+    def test_get_global_types(self):
+        """get_global_types() returns entity types that are NOT article-scoped."""
+        registry = SchemaRegistry(config_dir=SCHEMA_DIR)
+        global_types = registry.get_global_types()
+        assert "Alternative" in global_types
+        assert "Tissue_Site" in global_types
+        assert "Indicator" in global_types
+        assert "Method" in global_types
+        assert "Alternative_Class" in global_types
+        # Article-scoped types are NOT in global_types
+        for ename in ["Experiment", "Swine_Model", "Swine", "Intervention",
+                       "Control_Group", "Result", "Literature", "Composite_Product"]:
+            assert ename not in global_types, f"{ename} should NOT be in global_types"

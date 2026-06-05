@@ -23,7 +23,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from src.data import Document, Extraction
 
@@ -277,3 +277,250 @@ def extract_from_file(
 
     doc = Document(text=text, document_id=doc_id)
     return extract(document, pre_extractor=pre_extractor, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Batch processing — single file or directory → combined graph
+# ---------------------------------------------------------------------------
+
+
+def batch_extract_pmc(
+    input_path: str | Path,
+    output_dir: str | Path = "output",
+    *,
+    registry=None,
+    model=None,
+    model_factory: Callable[[], Any] | None = None,
+    glob_pattern: str = "*.xml",
+    skip_gate: bool = False,
+    max_workers: int | None = None,
+    **kwargs,
+) -> dict:
+    """Process one PMC XML file or a directory of XML files, combining all
+    results into a single graph.
+
+    When *max_workers* > 1, processes files in parallel using a
+    ``ThreadPoolExecutor``.  Each worker thread creates its own model
+    instance for thread safety.
+
+    Parameters
+    ----------
+    input_path:
+        Path to a PMC XML file or a directory containing ``.xml`` files.
+    output_dir:
+        Directory where ``review/`` and ``graph/`` subdirectories will be
+        written.
+    registry:
+        SchemaRegistry instance.  Created with defaults when ``None``.
+    model:
+        Pre-configured LLM provider.  Only used in single-worker mode
+        (``max_workers=1``).  For parallel mode, use *model_factory* instead
+        so each thread gets its own instance.
+    model_factory:
+        Zero-argument callable that returns a fresh model instance.
+        Required for thread safety when ``max_workers > 1``.  Defaults to
+        ``create_model`` from ``src.factory``.
+    glob_pattern:
+        File-matching pattern when *input_path* is a directory
+        (default: ``"*.xml"``).
+    skip_gate:
+        When ``True``, skip the gate check and always run the bulk (results)
+        extraction phase.  Default ``False``.
+    max_workers:
+        Maximum number of parallel worker threads.  Defaults to
+        ``settings.max_workers`` (currently 4).  Set to 1 for sequential
+        processing.
+
+    Returns
+    -------
+    dict
+        ``{"results": [...], "graph": Graph, "output_dir": Path}``
+    """
+    del model  # replaced by model_factory for thread safety
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from pathlib import Path
+    import threading
+
+    from src.adapters.pmc_sectioned import extract_sectioned
+    from src.adapters.pmc import export_entity_review_csv
+    from src.checkpoint import save_checkpoint, load_checkpoint
+    from src.graph import build_graph, export_neo4j_csv
+    from src.schema_registry import SchemaRegistry
+    from src.config import setup_logging, settings
+
+    setup_logging("INFO")
+
+    if registry is None:
+        registry = SchemaRegistry()
+    if model_factory is None:
+        from src.factory import create_model as model_factory
+    if max_workers is None:
+        max_workers = settings.max_workers
+
+    input_p = Path(input_path).resolve()
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    # Resolve input files
+    if input_p.is_file():
+        xml_files = [input_p]
+    elif input_p.is_dir():
+        xml_files = sorted(input_p.glob(glob_pattern))
+        if not xml_files:
+            raise FileNotFoundError(
+                f"No files matching '{glob_pattern}' found in {input_p}"
+            )
+    else:
+        raise FileNotFoundError(f"Input path not found: {input_p}")
+
+    logger.info("Batch extraction: %d file(s) → %s (workers=%d)",
+                 len(xml_files), out, max_workers)
+
+    checkpoint_dir = settings.checkpoint_dir
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Resume from checkpoints
+    all_results: list = []
+    unprocessed: list[Path] = []
+    for xml_file in xml_files:
+        ckpt_path = checkpoint_dir / f"{xml_file.stem}.checkpoint"
+        loaded = load_checkpoint(ckpt_path)
+        if loaded is not None:
+            all_results.append(loaded)
+            logger.info("Resumed checkpoint for %s (%d entities)",
+                         xml_file.stem, len(loaded.extractions))
+        else:
+            unprocessed.append(xml_file)
+
+    if not unprocessed:
+        logger.info("All %d file(s) already processed (checkpoints found)", len(xml_files))
+        return _build_graph_and_export(all_results, out, registry)
+
+    total_extractions = sum(len(r.extractions) for r in all_results)
+    skipped_articles = 0
+    stats_lock = threading.Lock()
+
+    # 2. Process files (parallel or sequential)
+    if max_workers > 1 and len(unprocessed) > 1:
+        logger.info("Parallel processing %d file(s) with %d workers",
+                     len(unprocessed), max_workers)
+
+        def process_one(xml_file: Path):
+            try:
+                model_inst = model_factory()
+                result = extract_sectioned(
+                    xml_file, registry=registry, model=model_inst,
+                    **kwargs,
+                )
+                ckpt_path = checkpoint_dir / f"{xml_file.stem}.checkpoint"
+                save_checkpoint(result, ckpt_path)
+                return (xml_file, result, None, None)
+            except Exception as exc:
+                logger.error("Failed to extract %s: %s", xml_file.name, exc)
+                return (xml_file, None, str(exc), None)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_file = {
+                executor.submit(process_one, xf): xf
+                for xf in unprocessed
+            }
+            for future in as_completed(future_to_file):
+                xml_file = future_to_file[future]
+                try:
+                    f, result, error, _ = future.result()
+                    if result is not None:
+                        with stats_lock:
+                            all_results.append(result)
+                            n = len(result.extractions)
+                            total_extractions += n
+                    if error:
+                        with stats_lock:
+                            skipped_articles += 1
+                    logger.info("  %s: %d entities", xml_file.stem,
+                                 len(result.extractions) if result else 0)
+                except Exception as exc:
+                    logger.error("Unexpected error processing %s: %s",
+                                 xml_file.name, exc)
+    else:
+        # Sequential fallback
+        for xml_file in unprocessed:
+            logger.info("=== %s ===", xml_file.name)
+            try:
+                model_inst = model_factory()
+                result = extract_sectioned(
+                    xml_file, registry=registry, model=model_inst,
+                    **kwargs,
+                )
+            except Exception as exc:
+                logger.error("Failed to extract %s: %s", xml_file.name, exc)
+                continue
+
+            ckpt_path = checkpoint_dir / f"{xml_file.stem}.checkpoint"
+            save_checkpoint(result, ckpt_path)
+
+            n = len(result.extractions)
+            total_extractions += n
+            all_results.append(result)
+
+            type_counts: dict[str, int] = {}
+            for ext in result.extractions:
+                type_counts[ext.extraction_class] = (
+                    type_counts.get(ext.extraction_class, 0) + 1
+                )
+            type_summary = ", ".join(
+                f"{t}={c}" for t, c in sorted(type_counts.items())
+            )
+            logger.info("  %d entities: %s", n, type_summary)
+            if result.warnings:
+                gate_fails = [w for w in result.warnings if "Gate" in w]
+                if gate_fails:
+                    skipped_articles += 1
+                    logger.info("  ⚠ gate failed, results phase skipped")
+
+    logger.info(
+        "Total: %d entities across %d file(s) (%d gate-skipped)",
+        total_extractions, len(xml_files), skipped_articles,
+    )
+
+    return _build_graph_and_export(all_results, out, registry)
+
+
+def _build_graph_and_export(
+    all_results: list,
+    output_dir: Path,
+    registry: Any,
+) -> dict:
+    """Build graph and export CSVs from collected results."""
+    from src.adapters.pmc import export_entity_review_csv
+    from src.graph import build_graph, export_neo4j_csv
+
+    out = output_dir
+
+    # Export review CSVs (combined across all files)
+    review_dir = out / "review"
+    export_entity_review_csv(all_results, review_dir, registry)
+    logger.info("Review CSVs exported to %s/", review_dir)
+
+    # Build combined graph
+    global_types: frozenset[str] = frozenset()
+    if registry is not None:
+        try:
+            global_types = registry.get_global_types()
+        except Exception:
+            pass
+    graph = build_graph(all_results, registry, global_types=global_types)
+    logger.info(
+        "Graph: %d nodes, %d edges", len(graph.nodes), len(graph.edges)
+    )
+
+    # Export Neo4j CSV
+    graph_dir = out / "graph"
+    graph_dir.mkdir(parents=True, exist_ok=True)
+    export_neo4j_csv(graph, graph_dir)
+    logger.info("Neo4j CSV exported to %s/", graph_dir)
+
+    return {
+        "results": all_results,
+        "graph": graph,
+        "output_dir": out,
+    }

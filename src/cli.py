@@ -1,119 +1,188 @@
-"""CLI entry point for llm-extract.  Thin wrapper over the generic extraction API."""
+"""CLI entry point for llm-extract — Thin wrapper over the extraction API.
+
+Usage::
+
+    # Single file
+    llm-extract batch --input data/xml/PMC12188611.xml --output output/my_run
+
+    # Directory (all *.xml files, combined into one graph)
+    llm-extract batch --input data/xml/ --output output/batch_run
+
+    # Directory with custom glob
+    llm-extract batch --input data/xml/ --glob "PMC*.xml" --output output/run
+
+    # Disable gate (always run full extraction)
+    llm-extract batch --input data/xml/ --no-skip-gate --output output/run
+
+    # Debug: inspect a single file
+    llm-extract debug --input data/xml/PMC12188611.xml
+"""
+
+from __future__ import annotations
+
+import logging
 import sys
 from pathlib import Path
 
 import click
 
+logger = logging.getLogger(__name__)
+
 
 @click.group()
 def cli():
-    """llm-extract — Generic Knowledge Graph Extraction Pipeline."""
+    """llm-extract — Knowledge Graph Extraction Pipeline."""
+
+
+# ---------------------------------------------------------------------------
+# batch — single file or directory → combined graph
+# ---------------------------------------------------------------------------
 
 
 @cli.command()
-@click.option("--file", "-f", "file_path", required=True,
-              help="Path to a text file to extract from")
-@click.option("--output", "-o", "output_dir", default="output")
-def extract(file_path, output_dir):
-    """Extract entities from one file and export graph."""
-    from src.extraction import extract_from_file
-    from src.graph import build_graph, export_neo4j_csv
-    from src.schema_registry import SchemaRegistry
+@click.option(
+    "--input", "-i", "input_path", required=True,
+    help="Path to a PMC XML file or a directory of XML files.",
+)
+@click.option(
+    "--output", "-o", "output_dir", default="output",
+    help="Output directory (review/ and graph/ subdirectories created here).",
+)
+@click.option(
+    "--glob", "glob_pattern", default="*.xml",
+    help="File-matching pattern when INPUT is a directory (default: *.xml).",
+)
+@click.option(
+    "--no-skip-gate", is_flag=True, default=False,
+    help="Disable gate — always run the full extraction even when the gate fails.",
+)
+@click.option(
+    "--model", "model_name", default=None,
+    help="Model name override (provider-specific).",
+)
+@click.option(
+    "--verbose", "-v", is_flag=True, default=False,
+    help="Enable DEBUG-level logging.",
+)
+@click.option(
+    "--workers", "-w", "max_workers", type=int, default=None,
+    help="Maximum parallel workers (default: from config, currently 4).",
+)
+def batch(input_path, output_dir, glob_pattern, no_skip_gate, model_name, verbose, max_workers):
+    """Extract entities from one or more PMC XML files and export a combined graph.
 
-    registry = SchemaRegistry()
-    result = extract_from_file(file_path)
+    INPUT can be a single XML file or a directory.  When a directory is
+    provided, all files matching --glob (default: ``*.xml``) are processed
+    and their results are merged into one graph.
+    """
+    from src.extraction import batch_extract_pmc
+    from src.config import setup_logging
 
-    click.echo(f"Entities: {len(result.extractions)}")
+    setup_logging("DEBUG" if verbose else "INFO")
 
-    # Show entity distribution
-    type_counts: dict[str, int] = {}
-    for ext in result.extractions:
-        type_counts[ext.extraction_class] = type_counts.get(ext.extraction_class, 0) + 1
-    for t, c in sorted(type_counts.items()):
-        click.echo(f"  {t}: {c}")
+    click.echo(f"Input:    {input_path}")
+    click.echo(f"Output:   {output_dir}")
+    click.echo(f"Pattern:  {glob_pattern}")
+    click.echo(f"Gate:     {'disabled' if no_skip_gate else 'enabled'}")
+    click.echo(f"Workers:  {max_workers or 'auto'}")
 
-    # Show warnings
-    for w in result.warnings:
-        click.echo(f"  ⚠ {w}")
-
-    graph = build_graph([result], registry)
-    click.echo(f"Graph: {len(graph.nodes)} nodes, {len(graph.edges)} edges")
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    export_neo4j_csv(graph, out)
-    click.echo(f"Exported nodes.csv + edges.csv to {out}/")
-
-
-@cli.command()
-@click.option("--file", "-f", "file_path", required=True,
-              help="Path to a file to extract from")
-def debug(file_path):
-    """Debug: extract from a single file and show first 10 entities."""
-    from src.extraction import extract_from_file
-
-    click.echo(f"Debug extraction from: {file_path}")
-    result = extract_from_file(file_path)
-    click.echo(f"Extracted {len(result.extractions)} entities")
-    for w in result.warnings:
-        click.echo(f"  ⚠ {w}")
-    for ext in result.extractions[:10]:
-        src_loc = getattr(ext, "source_location", "?")
-        evidence = getattr(ext, "evidence_text", "")[:60]
-        click.echo(f"  [{ext.extraction_class}] {ext.extraction_text}  ({src_loc})")
-        if evidence:
-            click.echo(f"    evidence: {evidence}...")
-
-
-@cli.command()
-@click.option("--dir", "-d", "input_dir", default="data",
-              help="Directory containing text files to process")
-@click.option("--output", "-o", "output_dir", default="output")
-@click.option("--glob", "glob_pattern", default="*.txt",
-              help="File glob pattern (default: *.txt)")
-def run(input_dir, output_dir, glob_pattern):
-    """Run the full pipeline on all files in a directory."""
-    from src.extraction import extract_from_file
-    from src.graph import build_graph, export_neo4j_csv
-    from src.schema_registry import SchemaRegistry
-
-    dir_path = Path(input_dir)
-    files = sorted(dir_path.glob(glob_pattern))
-    if not files:
-        click.echo(f"No files matching '{glob_pattern}' found in {input_dir}")
+    try:
+        result = batch_extract_pmc(
+            input_path,
+            output_dir=output_dir,
+            glob_pattern=glob_pattern,
+            skip_gate=no_skip_gate,
+            max_workers=max_workers,
+        )
+    except FileNotFoundError as exc:
+        click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
 
-    registry = SchemaRegistry()
-    all_results = []
-    total_entities = 0
+    total = sum(len(r.extractions) for r in result["results"])
+    graph = result["graph"]
+    click.echo()
+    click.echo(f"Done. {total} entities, {len(graph.nodes)} graph nodes, "
+               f"{len(graph.edges)} graph edges")
+    click.echo(f"Review CSVs:  {result['output_dir']}/review/")
+    click.echo(f"Neo4j CSVs:   {result['output_dir']}/graph/")
 
-    for f in files:
-        click.echo(f"=== {f.name} ===")
-        result = extract_from_file(str(f))
-        all_results.append(result)
-        total_entities += len(result.extractions)
-        click.echo(f"  Entities: {len(result.extractions)}")
-        for w in result.warnings:
-            click.echo(f"  ⚠ {w}")
+    # Per-type summary
+    type_counts: dict[str, int] = {}
+    for r in result["results"]:
+        for ext in r.extractions:
+            type_counts[ext.extraction_class] = (
+                type_counts.get(ext.extraction_class, 0) + 1
+            )
+    if type_counts:
+        click.echo()
+        click.echo("Entity type counts:")
+        for t, c in sorted(type_counts.items()):
+            click.echo(f"  {t}: {c}")
 
-    graph = build_graph(all_results, registry)
-    click.echo(f"\nTotal: {total_entities} entities, "
-               f"{len(graph.nodes)} nodes, {len(graph.edges)} edges "
-               f"across {len(all_results)} files")
 
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    export_neo4j_csv(graph, out)
-    click.echo(f"Exported to {out}/nodes.csv + {out}/edges.csv")
+# ---------------------------------------------------------------------------
+# debug — inspect a single file
+# ---------------------------------------------------------------------------
 
 
 @cli.command()
-@click.option("--checkpoints", required=True, help="Path to intermediates directory")
-@click.option("--output", "-o", "output_dir", default="output")
-def export(checkpoints, output_dir):
-    """Export graph from existing checkpoints (skip extraction)."""
-    click.echo(f"Exporting from checkpoints: {checkpoints}")
-    # TODO: load checkpoints, build graph, export CSV
-    click.echo("Not yet implemented — use 'run' command instead.")
+@click.option(
+    "--input", "-i", "input_path", required=True,
+    help="Path to a PMC XML file.",
+)
+@click.option(
+    "--max", "-n", "max_entities", default=20,
+    help="Maximum entities to display per type (default: 20).",
+)
+def debug(input_path, max_entities):
+    """Debug: extract entities from a single PMC XML file and print them.
+
+    Shows extraction_text, evidence_text, and source_location for each
+    entity, grouped by entity type.
+    """
+    from src.adapters.pmc_sectioned import extract_sectioned
+    from src.schema_registry import SchemaRegistry
+    from src.config import setup_logging
+
+    setup_logging("INFO")
+
+    registry = SchemaRegistry()
+    click.echo(f"Extracting from: {input_path}")
+
+    result = extract_sectioned(input_path, registry=registry)
+    total = len(result.extractions)
+
+    click.echo(f"\n{total} entities extracted")
+    if result.warnings:
+        for w in result.warnings[:10]:
+            click.echo(f"  ⚠ {w}")
+
+    # Group by entity type
+    by_type: dict[str, list] = {}
+    for ext in result.extractions:
+        by_type.setdefault(ext.extraction_class, []).append(ext)
+
+    for etype, exts in sorted(by_type.items()):
+        click.echo(f"\n─── {etype} ({len(exts)}) ───")
+        for ext in exts[:max_entities]:
+            evidence = (getattr(ext, "evidence_text", "") or "")[:100].strip()
+            src_loc = (getattr(ext, "source_location", "") or "")[:80]
+
+            click.echo(f"  [{ext.extraction_text}]")
+            if evidence:
+                click.echo(f"    evidence: {evidence}...")
+            if src_loc:
+                click.echo(f"    location: {src_loc}")
+            # Show key attributes
+            if ext.attributes:
+                key_attrs = {k: v for k, v in ext.attributes.items()
+                             if v and v != "Not reported" and k not in
+                             ("evidence_text", "source_location")}
+                if key_attrs:
+                    attr_str = ", ".join(
+                        f"{k}={v!r}" for k, v in list(key_attrs.items())[:5]
+                    )
+                    click.echo(f"    attrs: {attr_str}")
 
 
 if __name__ == "__main__":

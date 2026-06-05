@@ -21,7 +21,8 @@ class OpenAICompatProvider(BaseLanguageModel):
 
     def __init__(self, model_id: str = "deepseek-chat", api_key: str | None = None,
                  base_url: str | None = None, format_type: FormatType = FormatType.JSON,
-                 temperature: float | None = None, max_workers: int = 10, **kwargs):
+                 temperature: float | None = None, max_workers: int = 10,
+                 thinking_enabled: bool = True, **kwargs):
         super().__init__(**kwargs)
         self.model_id = model_id
         self.api_key = api_key
@@ -29,6 +30,7 @@ class OpenAICompatProvider(BaseLanguageModel):
         self.format_type = format_type
         self.temperature = temperature if temperature is not None else settings.llm_temperature
         self.max_workers = max_workers
+        self.thinking_enabled = thinking_enabled
         self.openai_schema: OpenAISchema | None = None
         self._capabilities = detect_capabilities(model_id)
         self._client: httpx.Client | None = None
@@ -115,4 +117,6 @@ class OpenAICompatProvider(BaseLanguageModel):
             body["response_format"] = {"type": "json_object"}
         if "max_tokens" in config:
             body["max_tokens"] = config["max_tokens"]
+        if not self.thinking_enabled:
+            body["thinking"] = {"type": "disabled"}
         return body

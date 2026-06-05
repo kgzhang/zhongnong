@@ -1,6 +1,7 @@
-.PHONY: help install sync test test-cov test-watch debug extract run-all clean clean-all
+.PHONY: help install sync test test-cov test-watch debug batch batch-dir batch-all clean clean-all
 
 CLI := uv run python -m src.cli
+STANDALONE := python scripts/batch_extract.py
 
 # ---------------------------------------------------------------------------
 # Default
@@ -11,17 +12,27 @@ help:
 	@echo "Setup:"
 	@echo "  make install       Install dependencies via uv sync"
 	@echo ""
-	@echo "Tests (203 total):"
+	@echo "Tests:"
 	@echo "  make test          Run all tests"
 	@echo "  make test-cov      Run tests with coverage report"
 	@echo "  make test-watch    Run tests in fail-fast mode"
 	@echo ""
-	@echo "Extraction:"
-	@echo "  make debug XML=data/xml/PMC12183824.xml"
-	@echo "                     Debug: extract from single article"
-	@echo "  make extract XML=data/xml/PMC12183824.xml"
-	@echo "                     Extract and export Neo4j CSV for one article"
-	@echo "  make run-all       Run pipeline on all articles in data/xml/"
+	@echo "Batch Extraction (via CLI):"
+	@echo "  make batch XML=data/xml/PMC12188611.xml"
+	@echo "                     Single file → output/<filename>/"
+	@echo "  make batch-dir DIR=data/xml/"
+	@echo "                     All *.xml in directory → output/batch/"
+	@echo "  make batch-all     All *.xml in data/xml/ → output/batch/"
+	@echo ""
+	@echo "Batch Extraction (standalone — no CLI install needed):"
+	@echo "  make batch-py XML=data/xml/PMC12188611.xml"
+	@echo "                     Single file via scripts/batch_extract.py"
+	@echo "  make batch-py-dir DIR=data/xml/"
+	@echo "                     Directory via scripts/batch_extract.py"
+	@echo ""
+	@echo "Debugging:"
+	@echo "  make debug XML=data/xml/PMC12188611.xml"
+	@echo "                     Extract + inspect a single file"
 	@echo ""
 	@echo "Cleanup:"
 	@echo "  make clean         Remove output + cache"
@@ -50,18 +61,36 @@ test-watch:
 	uv run pytest tests/ -v --tb=short -x
 
 # ---------------------------------------------------------------------------
-# Extraction
+# Batch extraction (via CLI)
+# ---------------------------------------------------------------------------
+batch:
+	@test -n "$(XML)" || { echo "Usage: make batch XML=data/xml/PMC12188611.xml"; exit 1; }
+	$(CLI) batch --input $(XML)
+
+batch-dir:
+	@test -n "$(DIR)" || { echo "Usage: make batch-dir DIR=data/xml/"; exit 1; }
+	$(CLI) batch --input $(DIR)
+
+batch-all:
+	$(CLI) batch --input data/xml/
+
+# ---------------------------------------------------------------------------
+# Batch extraction (standalone script — no CLI install needed)
+# ---------------------------------------------------------------------------
+batch-py:
+	@test -n "$(XML)" || { echo "Usage: make batch-py XML=data/xml/PMC12188611.xml"; exit 1; }
+	$(STANDALONE) --input $(XML)
+
+batch-py-dir:
+	@test -n "$(DIR)" || { echo "Usage: make batch-py-dir DIR=data/xml/"; exit 1; }
+	$(STANDALONE) --input $(DIR)
+
+# ---------------------------------------------------------------------------
+# Debugging
 # ---------------------------------------------------------------------------
 debug:
-	@test -n "$(XML)" || { echo "Usage: make debug XML=data/xml/PMC12183824.xml"; exit 1; }
-	$(CLI) debug --xml $(XML)
-
-extract:
-	@test -n "$(XML)" || { echo "Usage: make extract XML=data/xml/PMC12183824.xml"; exit 1; }
-	$(CLI) extract --xml $(XML) --no-skip-gate
-
-run-all:
-	$(CLI) run --dir data/xml --no-skip-gate
+	@test -n "$(XML)" || { echo "Usage: make debug XML=data/xml/PMC12188611.xml"; exit 1; }
+	$(CLI) debug --input $(XML)
 
 # ---------------------------------------------------------------------------
 # Cleanup

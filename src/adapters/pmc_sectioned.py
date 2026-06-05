@@ -25,6 +25,7 @@ from src.adapters.pmc import (
     export_entity_review_csv,
     _extract_conclusion,
 )
+from src.aligner import align_and_evidence_batch
 from src.coreference import resolve_coreferences, clean_evidence_batch
 from src.data import Document, Extraction
 from src.extraction import DocumentExtractionResult
@@ -35,7 +36,9 @@ logger = logging.getLogger(__name__)
 # Section → Entity type routing (from BACKGROUND.md)
 # ---------------------------------------------------------------------------
 
-# Entities extracted from Materials & Methods
+# Entities extracted from Materials & Methods — default fallback.
+# Actual routing is derived from extraction_phases.yaml via
+# registry.build_section_routing() when a registry is available.
 _METHODS_ENTITIES = [
     "Alternative",
     "Composite_Product",
@@ -49,12 +52,45 @@ _METHODS_ENTITIES = [
     "Experiment",
 ]
 
-# Entities extracted from Results & Discussion
+# Entities extracted from Results & Discussion — default fallback.
 _RESULTS_ENTITIES = [
     "Result",
 ]
 
 # Literature is pre-extracted (never sent to LLM)
+
+
+def _get_section_entities(registry, section_name: str) -> list[str]:
+    """Get entity types to extract for a given section from phase config.
+
+    Falls back to the hardcoded lists if no registry or phase config is available.
+
+    When multiple phases target the same section (e.g., gate + bulk both use
+    ``sections: [body]`` for methods), their entity types are **combined**
+    so that all required entity types are extracted from that section.
+    """
+    if registry is not None:
+        try:
+            routing = registry.build_section_routing()
+            combined: list[str] = []
+            # Collect entity names from all phases whose section matches
+            for entry in routing:
+                if entry["section"] == section_name:
+                    combined.extend(entry["entity_names"])
+            if combined:
+                return list(dict.fromkeys(combined))  # dedup, preserve order
+            # If exact section match fails, try matching "body" for methods
+            # (both gate and bulk phases use sections: [body])
+            if section_name == "methods":
+                for entry in routing:
+                    if entry["section"] == "body":
+                        combined.extend(entry["entity_names"])
+                if combined:
+                    return list(dict.fromkeys(combined))
+        except Exception:
+            pass
+    # Fallback
+    return _METHODS_ENTITIES if section_name == "methods" else _RESULTS_ENTITIES
 
 
 def _build_indicator_context(extractions: list) -> str:
@@ -214,11 +250,12 @@ def extract_sectioned(
     all_extractions.extend(lit_exts)
     logger.debug("Pre-extracted %d Literature entities", len(lit_exts))
 
-    # 3. Methods section extraction
+    # 3. Methods section extraction — entity types from phase config
     methods_text = _build_section_text(meta, "methods")
     if methods_text.strip():
+        methods_entities = _get_section_entities(registry, "methods")
         logger.info("Methods section: %d chars → %d entity types",
-                     len(methods_text), len(_METHODS_ENTITIES))
+                     len(methods_text), len(methods_entities))
         methods_doc = Document(
             text=methods_text,
             document_id=f"{doc_id}_methods",
@@ -229,7 +266,7 @@ def extract_sectioned(
                 registry=registry,
                 model=model,
                 max_char_buffer=max_char_buffer,
-                entity_names=_METHODS_ENTITIES,
+                entity_names=methods_entities,
                 **kwargs,
             )
             methods_exts = list(methods_result.extractions)
@@ -240,60 +277,90 @@ def extract_sectioned(
             logger.warning("Methods extraction failed: %s", exc)
             warnings.append(f"Methods extraction failed: {exc}")
 
-    # 4. Collect Methods entities as context for Results extraction
-    #    BACKGROUND.md §4.5: 确保每个提取的指标都能在材料与方法部分找到对应的Indicator定义
+    # 4. Gate check: evaluate whether the article passes the gate before
+    #    continuing to the bulk (results) extraction phase.
+    do_results = True
+    if registry is not None:
+        phases = registry.phase_defs()
+        gate_phase = next((p for p in phases if p.gate is not None), None)
+        if gate_phase and gate_phase.gate is not None:
+            do_results = registry.evaluate_gate(
+                all_extractions,
+                gate_phase.gate.entity,
+                gate_phase.gate.condition,
+            )
+            if not do_results:
+                logger.info(
+                    "Gate FAILED for %s — %s: %s. on_fail=%s",
+                    doc_id,
+                    gate_phase.gate.entity,
+                    gate_phase.gate.condition,
+                    gate_phase.gate.on_fail,
+                )
+                warnings.append(
+                    f"Gate check failed: {gate_phase.gate.entity} "
+                    f"condition '{gate_phase.gate.condition}' not met"
+                )
+
+    # 5. Collect Methods entities as context for Results extraction.
+    #    Context is wrapped in XML-style tags to structurally separate
+    #    reference data from the source text, preventing the LLM from
+    #    confusing context descriptions with actual article content.
     indicator_context = _build_indicator_context(all_extractions)
     control_context = _build_control_context(all_extractions)
     tissue_context = _build_tissue_context(all_extractions)
     results_context = ""
-    if indicator_context:
-        results_context = (
-            "=== INDICATORS DEFINED IN METHODS (use EXACT abbreviations for Result.indicator_abbreviation) ===\n"
-            + indicator_context
-        )
-    if control_context:
-        results_context += (
-            "\n=== CONTROL GROUPS DEFINED IN METHODS (use EXACT names for Result.compared_to_group) ===\n"
-            + control_context
-        )
-    if tissue_context:
-        results_context += (
-            "\n=== TISSUE SITES DEFINED IN METHODS (use EXACT names for Result.tissue_site) ===\n"
-            + tissue_context
-        )
+    if indicator_context or control_context or tissue_context:
+        ctx_parts = ["<reference_context>"]
+        ctx_parts.append("<!-- The following entities were extracted from the Methods section. -->")
+        ctx_parts.append("<!-- Use EXACT abbreviations and names from this list as reference field values. -->")
+        ctx_parts.append("<!-- This is REFERENCE DATA, NOT part of the article text to extract from. -->")
+        if indicator_context:
+            ctx_parts.append(indicator_context)
+        if control_context:
+            ctx_parts.append(control_context)
+        if tissue_context:
+            ctx_parts.append(tissue_context)
+        ctx_parts.append("</reference_context>")
+        results_context = "\n\n".join(ctx_parts)
 
-    # 5. Results section extraction (with Methods context)
-    results_text = _build_section_text(meta, "results")
-    if results_text.strip():
-        logger.info("Results section: %d chars → %d entity types (context: %d chars)",
-                     len(results_text), len(_RESULTS_ENTITIES), len(results_context))
-        results_doc = Document(
-            text=results_text,
-            document_id=f"{doc_id}_results",
-            additional_context=results_context if results_context else None,
-        )
-        try:
-            results_result = extract(
-                results_doc,
-                registry=registry,
-                model=model,
-                max_char_buffer=max_char_buffer,
-                entity_names=_RESULTS_ENTITIES,
+    # 6. Results section extraction (with Methods context) — gated by phase config
+    if do_results:
+        results_text = _build_section_text(meta, "results")
+        if results_text.strip():
+            results_entities = _get_section_entities(registry, "results")
+            logger.info("Results section: %d chars → %d entity types (context: %d chars)",
+                         len(results_text), len(results_entities), len(results_context))
+            results_doc = Document(
+                text=results_text,
+                document_id=f"{doc_id}_results",
                 additional_context=results_context if results_context else None,
-                **kwargs,
             )
-            results_exts = list(results_result.extractions)
-            all_extractions.extend(results_exts)
-            warnings.extend(results_result.warnings)
-            logger.info("Results: %d entities extracted", len(results_exts))
-        except Exception as exc:
-            logger.warning("Results extraction failed: %s", exc)
-            warnings.append(f"Results extraction failed: {exc}")
+            try:
+                results_result = extract(
+                    results_doc,
+                    registry=registry,
+                    model=model,
+                    max_char_buffer=max_char_buffer,
+                    entity_names=results_entities,
+                    additional_context=results_context if results_context else None,
+                    **kwargs,
+                )
+                results_exts = list(results_result.extractions)
+                all_extractions.extend(results_exts)
+                warnings.extend(results_result.warnings)
+                logger.info("Results: %d entities extracted", len(results_exts))
+            except Exception as exc:
+                logger.warning("Results extraction failed: %s", exc)
+                warnings.append(f"Results extraction failed: {exc}")
+    else:
+        logger.info("Results extraction SKIPPED for %s (gate failed)", doc_id)
 
-    # 5. Guarantee evidence text for every entity (fallback to str.find)
-    from src.coreference import ensure_evidence_batch
+    # 5. Per-extraction alignment against full text — replaces the old
+    #    derive_evidence + ensure_evidence fallback chain.  Aligns every
+    #    extraction independently against the complete article text.
     full_text = meta.full_text
-    ensure_evidence_batch(all_extractions, full_text)
+    align_and_evidence_batch(all_extractions, full_text, context_chars=400)
 
     # 5.5 Resolve coreferences (abbreviation→full name, dedup)
     all_extractions = resolve_coreferences(all_extractions, registry)

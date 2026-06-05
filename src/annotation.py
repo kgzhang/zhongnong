@@ -16,7 +16,7 @@ from src.data import (
     Document,
     Extraction,
 )
-from src.evidence import derive_evidence_batch
+from src.aligner import align_and_evidence_batch
 from src.format_handler import FormatHandler
 from src.prompting import (
     ContextAwarePromptBuilder,
@@ -317,45 +317,17 @@ class Annotator:
         token_offset = chunk.token_interval.start_index
         char_offset = chunk.char_interval.start_pos or 0
 
-        # 3. Align extractions to the CHUNK text (not the full document).
-        #    Offsets map chunk positions back to document coordinates.
-        #    This matches how the original langextract does it.
-        chunk_text = chunk.chunk_text
-        chunk_text_stripped = chunk.sanitized_chunk_text
+        # 3. Align extractions and derive evidence in ONE call.
+        #    Uses per-extraction alignment against the FULL document text
+        #    instead of the old join+delimiter group alignment against chunks.
+        from src.aligner import align_and_evidence_batch
+        align_and_evidence_batch(extractions, doc.text)
 
-        # Alignment works against the chunk text for precision.
-        # The prompt uses sanitized_chunk_text, so alignment should too.
-        # Use the non-stripped chunk_text for alignment since extractions
-        # refer to positions in the original text.
-        try:
-            aligned = list(
-                resolver.align(
-                    extractions,
-                    chunk_text,
-                    token_offset=token_offset,
-                    char_offset=char_offset,
-                    tokenizer_impl=tok,
-                )
-            )
-        except Exception:
-            logger.debug("Alignment failed for chunk", exc_info=True)
-            # Fall back: use extractions without alignment
-            aligned = list(extractions)
+        # 4. Derive source location from the document context.
+        _derive_source_locations(extractions, doc_id, doc.text, char_offset)
 
-        # 4. Derive evidence text from the full document text at aligned positions.
-        #    This is pure engineering — extract verbatim source text at char_interval.
-        derive_evidence_batch(aligned, doc.text)
-
-        # 5. Guarantee every extraction has evidence containing its text.
-        #    Falls back to str.find() on the document if alignment didn't set char_interval.
-        from src.coreference import ensure_evidence_batch
-        ensure_evidence_batch(aligned, doc.text)
-
-        # 6. Derive source location from the document context.
-        _derive_source_locations(aligned, doc_id, doc.text, char_offset)
-
-        # 7. Accumulate
-        per_doc.setdefault(doc_id, []).extend(aligned)
+        # 5. Accumulate
+        per_doc.setdefault(doc_id, []).extend(extractions)
 
     # ------------------------------------------------------------------
     # Internal: document chunk iterator
@@ -525,20 +497,49 @@ def _resolve_location(
     section_text: str,
     char_offset: int,
 ) -> str:
-    """Return a source location string for *extraction*."""
+    """Return a source location string for *extraction*.
+
+    Uses anchor-text: a short excerpt (20 chars before + matched text) that
+    can be used to locate the entity in the original document via text search.
+    Falls back to section name + table/figure references when char_interval
+    is not set.  The aligner may already have set source_location — if so,
+    keep it.
+
+    Format is compact: ``「…」<20 chars before> 〖<matched text>〗 <20 chars after>「…」``
+    where ``「…」`` marks truncation at the start/end of the document.
+    """
+    # If aligner already set a source_location (not the old pos@ format), keep it
+    existing = getattr(extraction, "source_location", "") or ""
+    if existing.startswith("「…」") or existing.startswith("near:"):
+        # already has a good source_location; just prepend section info
+        return f"{section_id}, {existing}"
+
     parts = [section_id]
     ci = extraction.char_interval
     if ci is not None and ci.start_pos is not None:
+        # Use 20-char anchor before/after the matched position
+        anchor_before = section_text[max(0, ci.start_pos - 20):ci.start_pos]
+        anchor_text = section_text[ci.start_pos:min(len(section_text), ci.end_pos or ci.start_pos + 20)]
+        anchor_after = section_text[ci.end_pos or ci.start_pos:min(len(section_text), (ci.end_pos or ci.start_pos) + 20)]
+
+        prefix = "「…」" if ci.start_pos > 20 else ""
+        suffix = "「…」" if (ci.end_pos or ci.start_pos) + 20 < len(section_text) else ""
+        anchor_loc = f"{prefix}{anchor_before} 〖{anchor_text}〗 {anchor_after}{suffix}"
+
+        # Also check for table/figure references nearby
         nearby_start = max(0, ci.start_pos - 200)
         nearby_end = min(len(section_text), (ci.end_pos or 0) + 200)
         nearby_text = section_text[nearby_start:nearby_end]
-        details = []
         tm = _TABLE_PATTERN.search(nearby_text)
         fm = _FIGURE_PATTERN.search(nearby_text)
+        table_fig = []
         if tm:
-            details.append(tm.group(0))
+            table_fig.append(tm.group(0))
         if fm:
-            details.append(fm.group(0))
-        if details:
-            parts.append(", ".join(details))
+            table_fig.append(fm.group(0))
+
+        if table_fig:
+            parts.append(f"{anchor_loc}, {', '.join(table_fig)}")
+        else:
+            parts.append(anchor_loc)
     return ", ".join(parts)
