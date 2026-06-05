@@ -1,25 +1,49 @@
 # 抗生素替代物知识图谱 — 提取阶段定义
 # 基于 schema.md 第4节 按四个层级的提取要点
+# 按 BACKGROUND.md 规范: 方法实体从 Methods 提取, 结果实体从 Results 提取
+#
+# 阶段设计:
+#   1. gate_alternative: 仅提取 Alternative 实体，通过门控后才继续
+#   2. methods_core: 提取方法区域的核心实体（动物、干预、对照、组织）
+#   3. bulk_methods: 提取方法区域的试验设计和指标
+#   4. bulk_results: 从结果区域提取统计结果
 
 phases:
   # -----------------------------------------------------------------------
-  # Phase 1: Gate — 扫描核心实体，通过门控后才继续全文提取
+  # Phase 1: Gate — 仅提取 Alternative，快速判断文献相关性
   # -----------------------------------------------------------------------
-  gate:
-    description: "扫描全文，提取抗生素替代物实体（Alternative），通过门控检查后进入全文提取"
-    sections: [body]
-    extracts: [Alternative, Tissue_Site, Swine, Swine_Model, Control_Group, Intervention]
+  gate_alternative:
+    description: "提取 Alternative 和 Swine 信息，必须同时存在猪相关信息和抗生素替代物才放行"
+    sections: [methods]
+    extracts: [Alternative, Swine, Swine_Model]
     gate:
       entity: Alternative
       condition: "classification not in ['Other', '', 'unmatched']"
       on_fail: skip_article
 
   # -----------------------------------------------------------------------
-  # Phase 2: Bulk — 提取所有剩余实体
+  # Phase 2: Methods Core — 提取动物模型、干预、对照、组织
   # -----------------------------------------------------------------------
-  bulk:
-    description: "提取全文中的试验设计、指标、方法和结果实体"
-    sections: [body]
-    extracts:
-      [Experiment, Indicator, Method, Result, Composite_Product]
-    context_from: [gate]
+  methods_core:
+    description: "从 Materials & Methods 区域提取动物模型、干预措施、对照组、组织部位，并补充提取 Alternative 组分"
+    sections: [methods]
+    extracts: [Intervention, Control_Group, Tissue_Site, Alternative]
+    context_from: [gate_alternative]
+
+  # -----------------------------------------------------------------------
+  # Phase 3: Bulk Methods — 提取试验设计和测定指标
+  # -----------------------------------------------------------------------
+  bulk_methods:
+    description: "从 Materials & Methods 区域提取试验设计、指标定义、测定方法、复合产品"
+    sections: [methods]
+    extracts: [Experiment, Indicator, Method, Composite_Product]
+    context_from: [gate_alternative, methods_core]
+
+  # -----------------------------------------------------------------------
+  # Phase 4: Results — 从结果区域提取统计结果及补充实体
+  # -----------------------------------------------------------------------
+  bulk_results:
+    description: "从 Results & Discussion 区域提取统计结果，同时补充识别 Tissue_Site/Method/Indicator 以覆盖 Methods 阶段遗漏的实体"
+    sections: [results]
+    extracts: [Result, Tissue_Site, Method, Indicator]
+    context_from: [gate_alternative, methods_core, bulk_methods]

@@ -185,6 +185,7 @@ def extract(
         doc_result = annotator.annotate_text(
             document.text,
             max_char_buffer=max_char_buffer,
+            batch_length=settings.batch_length,
             additional_context=additional_context,
             document_id=document.document_id,
             **kwargs,
@@ -490,18 +491,38 @@ def _build_graph_and_export(
     output_dir: Path,
     registry: Any,
 ) -> dict:
-    """Build graph and export CSVs from collected results."""
+    """Build graph and export CSVs from collected results.
+
+    Produces:
+    - ``review/`` — combined review CSVs for all files
+    - ``review/by_file/<filename>/`` — per-file review CSVs for file-level alignment
+    - ``graph/`` — combined Neo4j CSV export
+    """
     from src.adapters.pmc import export_entity_review_csv
     from src.graph import build_graph, export_neo4j_csv
 
     out = output_dir
 
-    # Export review CSVs (combined across all files)
+    # --- Combined review CSVs (all files merged) ---
     review_dir = out / "review"
     export_entity_review_csv(all_results, review_dir, registry)
-    logger.info("Review CSVs exported to %s/", review_dir)
+    logger.info("Combined review CSVs exported to %s/", review_dir)
 
-    # Build combined graph
+    # --- Per-file review CSVs (aligned by filename) ---
+    per_file_dir = review_dir / "by_file"
+    per_file_dir.mkdir(parents=True, exist_ok=True)
+    for result in all_results:
+        doc_name = result.document_id.replace("/", "_").replace("\\", "_")
+        file_review_dir = per_file_dir / doc_name
+        try:
+            export_entity_review_csv([result], file_review_dir, registry, deduplicate=False)
+            logger.debug("  Per-file review: %s/", file_review_dir)
+        except Exception as exc:
+            logger.warning("Per-file review export failed for %s: %s", doc_name, exc)
+
+    logger.info("Per-file review CSVs exported to %s/<filename>/", per_file_dir)
+
+    # --- Build combined graph ---
     global_types: frozenset[str] = frozenset()
     if registry is not None:
         try:
@@ -513,7 +534,7 @@ def _build_graph_and_export(
         "Graph: %d nodes, %d edges", len(graph.nodes), len(graph.edges)
     )
 
-    # Export Neo4j CSV
+    # --- Export Neo4j CSV ---
     graph_dir = out / "graph"
     graph_dir.mkdir(parents=True, exist_ok=True)
     export_neo4j_csv(graph, graph_dir)

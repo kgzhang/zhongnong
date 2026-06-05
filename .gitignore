@@ -9,3 +9,4 @@ data/
 .coverage
 .envdata/intermediates/
 output/
+*.log

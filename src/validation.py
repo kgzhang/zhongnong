@@ -461,6 +461,10 @@ def filter_incomplete_entities(
             keep.append(ext)
             continue
 
+        # Gate-preserved entities get a pass on missing fields
+        # (they were validated by the gate check itself)
+        is_gate_preserved = (ext.attributes or {}).pop("_gate_preserved", False)
+
         attrs = ext.attributes or {}
         missing: list[str] = []
         for rf in req_fields:
@@ -474,7 +478,7 @@ def filter_incomplete_entities(
             elif isinstance(val, dict) and len(val) == 0:
                 missing.append(rf)
 
-        if missing:
+        if missing and not is_gate_preserved:
             logger.warning(
                 "Dropped %s '%s': missing required field(s) %s",
                 ext.extraction_class,
@@ -483,6 +487,13 @@ def filter_incomplete_entities(
             )
             dropped += 1
         else:
+            if missing and is_gate_preserved:
+                logger.debug(
+                    "Kept gate-preserved %s '%s' despite missing: %s",
+                    ext.extraction_class,
+                    ext.extraction_text,
+                    missing,
+                )
             keep.append(ext)
 
     if dropped:
@@ -691,11 +702,17 @@ def _word_level_match(extraction_text: str, evidence: str, threshold: float = 0.
 
 def verify_extraction_text_in_evidence(
     extractions: list[Extraction],
+    full_text: str | None = None,
 ) -> tuple[list[Extraction], list[str]]:
     """Verify extraction_text appears in evidence_text. Drop entities that fail.
 
     Also strip parenthetical annotations from extraction_text if the annotated
     form doesn't appear in evidence but the base form does.
+
+    When *full_text* is provided (the complete document text), it is used as
+    a fallback search target when *evidence_text* doesn't contain the
+    extraction — this handles cases where fuzzy alignment produced an
+    evidence window that doesn't completely cover the matched region.
     """
     warnings: list[str] = []
 
@@ -711,27 +728,40 @@ def verify_extraction_text_in_evidence(
             keep.append(ext)
             continue
 
-        # Check if extraction_text (as-is) appears in evidence_text
+        # --- Strategy 1: Exact match in evidence_text (case-insensitive) ---
         if et.lower() in ev.lower():
             keep.append(ext)
             continue
 
-        # Try stripping parentheticals:
-        # "Microbe-derived antioxidants (sows)" → "Microbe-derived antioxidants"
-        stripped = re.sub(r"\s*\([^)]*\)\s*$", "", et).strip()
-        if stripped != et and stripped.lower() in ev.lower():
-            ext.extraction_text = stripped
-            logger.debug(
-                "Stripped parenthetical: '%s' → '%s'", et, stripped
-            )
+        # --- Strategy 1.5: Exact match in FULL document text (fallback) ---
+        # Fuzzy alignment can produce evidence windows offset from the
+        # actual match.  Searching the full text catches these cases.
+        if full_text and et.lower() in full_text.lower():
             keep.append(ext)
             continue
 
-        # Try word-level matching: if ≥70% of significant words appear in
-        # evidence, treat as a match (handles concatenated/synthetic names
-        # like "milk fat" where both words exist but the concatenated form
-        # was constructed by the LLM).
+        # --- Strategy 2: Strip parentheticals ---
+        # "Microbe-derived antioxidants (sows)" → "Microbe-derived antioxidants"
+        stripped = re.sub(r"\s*\([^)]*\)\s*$", "", et).strip()
+        if stripped != et:
+            if stripped.lower() in ev.lower():
+                ext.extraction_text = stripped
+                logger.debug("Stripped parenthetical: '%s' → '%s'", et, stripped)
+                keep.append(ext)
+                continue
+            if full_text and stripped.lower() in full_text.lower():
+                ext.extraction_text = stripped
+                logger.debug("Stripped parenthetical (full text): '%s' → '%s'", et, stripped)
+                keep.append(ext)
+                continue
+
+        # --- Strategy 3: Word-level matching ---
+        # If ≥50% of significant words appear in evidence (or full text),
+        # treat as a match (handles concatenated/synthetic names).
         if _word_level_match(et, ev, threshold=0.5):
+            keep.append(ext)
+            continue
+        if full_text and _word_level_match(et, full_text, threshold=0.5):
             keep.append(ext)
             continue
 
@@ -740,8 +770,8 @@ def verify_extraction_text_in_evidence(
             f"{ext.extraction_class} '{et}': dropped, extraction_text not found in evidence"
         )
         logger.debug(
-            "Dropped %s '%s': not found in evidence (len=%d)",
-            ext.extraction_class, et, len(ev),
+            "Dropped %s '%s': not found in evidence (ev_len=%d, has_full_text=%s)",
+            ext.extraction_class, et, len(ev), bool(full_text),
         )
 
     dropped_count = len(extractions) - len(keep)
@@ -863,5 +893,115 @@ def remove_orphan_entities(
         logger.info(
             "remove_orphan_entities: flagged %d orphan entities (kept, not dropped)",
             orphan_count,
+        )
+    return keep, warnings
+
+
+# ---------------------------------------------------------------------------
+# Composite_Product component validation — remove false composites
+# ---------------------------------------------------------------------------
+
+
+def validate_composite_product_components(
+    extractions: list[Extraction],
+) -> tuple[list[Extraction], list[str]]:
+    """Remove Composite_Product entities without real multi-component substance.
+
+    A valid Composite_Product MUST have a non-empty ``components`` list
+    with at least 2 distinct entries.  Single-substance entities misclassified
+    as Composite_Product by the LLM are dropped — they should be Alternative
+    entities instead.
+    """
+    warnings: list[str] = []
+    keep: list[Extraction] = []
+    dropped = 0
+
+    for ext in extractions:
+        if ext.extraction_class != "Composite_Product":
+            keep.append(ext)
+            continue
+
+        attrs = ext.attributes or {}
+        components = attrs.get("components")
+        product_name = attrs.get("product_name", "") or ext.extraction_text
+
+        # Evaluate if this is a genuine multi-component product
+        is_valid = False
+        if components and isinstance(components, list):
+            # Filter out empty strings and self-references
+            real_components = [
+                c for c in components
+                if isinstance(c, str) and c.strip()
+                and c.strip().lower() != product_name.strip().lower()
+            ]
+            if len(real_components) >= 2:
+                is_valid = True
+            elif len(real_components) == 1:
+                warnings.append(
+                    f"Composite_Product '{product_name}': only 1 component, "
+                    f"dropped (single substance misclassified as composite)"
+                )
+        elif components and isinstance(components, str) and components.strip():
+            # LLM output a string instead of a list
+            stripped = components.strip()
+            if stripped.lower() != product_name.strip().lower():
+                warnings.append(
+                    f"Composite_Product '{product_name}': components is string, "
+                    f"not list, dropped"
+                )
+
+        if is_valid:
+            keep.append(ext)
+        else:
+            dropped += 1
+            logger.info(
+                "Dropped Composite_Product '%s': insufficient components",
+                product_name,
+            )
+
+    if dropped:
+        logger.info(
+            "validate_composite_product_components: dropped %d false "
+            "composites, kept %d",
+            dropped,
+            sum(1 for e in keep if e.extraction_class == "Composite_Product"),
+        )
+    return keep, warnings
+
+
+# ---------------------------------------------------------------------------
+# Filter entities with empty evidence_text
+# ---------------------------------------------------------------------------
+
+
+def filter_empty_evidence(
+    extractions: list[Extraction],
+) -> tuple[list[Extraction], list[str]]:
+    """Remove entities whose evidence_text is empty or whitespace-only.
+
+    An entity without evidence_text is untraceable and should not be
+    included in the knowledge graph.
+    """
+    warnings: list[str] = []
+    keep: list[Extraction] = []
+    dropped = 0
+
+    for ext in extractions:
+        ev = getattr(ext, "evidence_text", "") or ""
+        if ev.strip():
+            keep.append(ext)
+        else:
+            dropped += 1
+            logger.warning(
+                "Dropped %s '%s': empty evidence_text",
+                ext.extraction_class,
+                ext.extraction_text,
+            )
+
+    if dropped:
+        logger.info(
+            "filter_empty_evidence: dropped %d entities with empty evidence, kept %d",
+            dropped,
+            len(keep),
         )
     return keep, warnings

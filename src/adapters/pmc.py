@@ -354,44 +354,89 @@ def _write_relationships_csv(
     rows: list[dict] = []
 
     # Build lookup: (entity_type, field_value) → canonical extraction
+    # Index by extraction_text, primary_text, AND all attribute values
+    # so that references using abbreviations, standard names, etc. all match.
     lookup: dict[tuple[str, str], Any] = {}
     normalized_lookup: dict[tuple[str, str], Any] = {}  # stripped punctuation
     for doc_id, ext in all_exts:
-        key = (ext.extraction_class, ext.extraction_text.strip().lower())
-        lookup[key] = ext
-        # Normalized: strip parens, punctuation, collapse spaces
-        norm = _normalize_key(ext.extraction_text)
-        normalized_lookup[(ext.extraction_class, norm)] = ext
-        # Also by primary_text attribute
+        attrs = ext.attributes or {}
+        etype = ext.extraction_class
+
+        # Index by extraction_text
+        et = ext.extraction_text.strip()
+        if et:
+            lookup[(etype, et.lower())] = ext
+            normalized_lookup[(etype, _normalize_key(et))] = ext
+
+        # Index by all attribute values (standard_name, abbreviation, etc.)
+        for attr_val in attrs.values():
+            if isinstance(attr_val, str) and attr_val.strip():
+                v = attr_val.strip()
+                lookup[(etype, v.lower())] = ext
+                normalized_lookup[(etype, _normalize_key(v))] = ext
+
+        # Index by primary_text attribute (highest priority for matching)
         if registry:
             try:
-                ed = registry.entity_def(ext.extraction_class)
-                pt_val = (ext.attributes or {}).get(ed.primary_text, "")
-                if pt_val:
-                    lookup[(ext.extraction_class, str(pt_val).strip().lower())] = ext
-                    normalized_lookup[(ext.extraction_class, _normalize_key(pt_val))] = ext
+                ed = registry.entity_def(etype)
+                pt_val = attrs.get(ed.primary_text, "")
+                if pt_val and isinstance(pt_val, str) and pt_val.strip():
+                    v = pt_val.strip()
+                    lookup[(etype, v.lower())] = ext
+                    normalized_lookup[(etype, _normalize_key(v))] = ext
             except (KeyError, AttributeError):
                 pass
 
     def _fuzzy_find(etype: str, target_text: str) -> bool:
-        """Try exact, normalized, substring, and word-overlap matching."""
-        t = target_text.strip().lower()
-        tn = _normalize_key(target_text)
-        # Exact
-        if (etype, t) in lookup or (etype, tn) in normalized_lookup:
+        """Try exact, normalized, substring, abbreviation, and word-overlap matching."""
+        t = target_text.strip()
+        if not t:
+            return False
+        t_lower = t.lower()
+        tn = _normalize_key(t)
+
+        # 1. Exact match (case-insensitive)
+        if (etype, t_lower) in lookup:
             return True
-        # Substring
+
+        # 2. Normalized match (no punctuation, collapsed spaces)
+        if (etype, tn) in normalized_lookup and tn:
+            return True
+
+        # 3. Substring match (bidirectional)
         for (et, k), _ in lookup.items():
-            if et == etype and (t in k or k in t):
+            if et != etype:
+                continue
+            if t_lower in k or k in t_lower:
                 return True
-        # Word overlap ≥ 2
+
+        # 4. Word overlap ≥ 2 (handles partial name matches)
         t_words = set(w for w in re.split(r'[\s_\-]+', tn) if len(w) > 2)
         if len(t_words) >= 2:
             for (et, k), _ in lookup.items():
-                if et == etype:
-                    k_words = set(w for w in re.split(r'[\s_\-]+', k) if len(w) > 2)
-                    if len(t_words & k_words) >= 2:
+                if et != etype:
+                    continue
+                k_words = set(w for w in re.split(r'[\s_\-]+', k) if len(w) > 2)
+                if len(t_words & k_words) >= 2:
+                    return True
+
+        # 5. Single-word match for short abbreviations (≥3 chars)
+        if len(t_lower) >= 3 and len(t_words) <= 1:
+            for (et, k), _ in lookup.items():
+                if et != etype:
+                    continue
+                k_norm = _normalize_key(k)
+                # Exact abbreviation match
+                if t_lower == k_norm:
+                    return True
+                # Target is an abbreviation of a longer name
+                # (e.g., "ADG" matches "Average Daily Gain")
+                if len(t_lower) <= 10 and len(k_norm) > len(t_lower):
+                    k_words = [w for w in re.split(r'[\s_\-]+', k_norm) if len(w) > 1]
+                    k_initials = ''.join(w[0] for w in k_words if w)
+                    if t_lower == k_initials.lower():
                         return True
+
         return False
 
     for doc_id, ext in all_exts:
@@ -441,20 +486,38 @@ def _write_relationships_csv(
                             target_name = v.get("standard_name", str(v))
                         else:
                             target_name = str(v)
+                        # Try ALL target types; use the first one that matches
+                        found = False
+                        matched_type = ""
                         for target_type in ir.target:
-                            found = _fuzzy_find(target_type, target_name.strip())
-                            rows.append({
-                                "source_doc": doc_id,
-                                "source_type": etype,
-                                "source_text": ext.extraction_text,
-                                "relation": ir.name,
-                                "target_type": target_type,
-                                "target_text": target_name.strip(),
-                                "target_found": "yes" if found else "no",
-                            })
+                            if _fuzzy_find(target_type, target_name.strip()):
+                                found = True
+                                matched_type = target_type
+                                break
+                        # Fallback: use the first target type if none match
+                        if not matched_type and ir.target:
+                            matched_type = ir.target[0]
+                        rows.append({
+                            "source_doc": doc_id,
+                            "source_type": etype,
+                            "source_text": ext.extraction_text,
+                            "relation": ir.name,
+                            "target_type": matched_type,
+                            "target_text": target_name.strip(),
+                            "target_found": "yes" if found else "no",
+                        })
 
             except (KeyError, AttributeError):
                 pass
+
+    # Filter: only keep relationships where the target entity actually exists.
+    # Unmatched edges (target_found="no") are dropped — it's better to have
+    # a clean graph with only verified edges than broken references.
+    matched_rows = [r for r in rows if r.get("target_found") == "yes"]
+    skipped = len(rows) - len(matched_rows)
+    if skipped:
+        print(f"  relationships.csv: {len(matched_rows)} matched edges "
+              f"({skipped} unmatched skipped)")
 
     with open(path, "w", encoding="utf-8", newline="") as fh:
         writer = _csv.DictWriter(fh, fieldnames=[
@@ -462,10 +525,8 @@ def _write_relationships_csv(
             "relation", "target_type", "target_text", "target_found",
         ])
         writer.writeheader()
-        for row in rows:
+        for row in matched_rows:
             writer.writerow(row)
-
-    print(f"  relationships.csv: {len(rows)} edges")
 
 
 # ---------------------------------------------------------------------------

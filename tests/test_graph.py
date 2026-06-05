@@ -15,6 +15,12 @@ from src.graph import (
 )
 
 
+def _data_nodes(graph: Graph) -> int:
+    """Count nodes that are NOT pre-built classification nodes."""
+    return sum(1 for n in graph.nodes
+               if not (n.properties or {}).get("_prebuilt", False))
+
+
 class TestEntityGlobalId:
     def test_deterministic(self):
         id1 = entity_global_id("Alternative", "thymol")
@@ -163,7 +169,10 @@ class TestBuildGraph:
             DocumentExtractionResult(document_id="12345", metadata={"doi": "10.1", "pmid": "12345"}, extractions=[]),
         ]
         graph = build_graph(results, registry)
-        assert len(graph.nodes) == 0
+        # Pre-built classification nodes always exist
+        prebuilt = [n for n in graph.nodes if (n.properties or {}).get("_prebuilt")]
+        assert len(prebuilt) >= 1, "Pre-built classification nodes should exist"
+        assert len([n for n in graph.nodes if not (n.properties or {}).get("_prebuilt")]) == 0
         assert len(graph.edges) == 0
 
     def test_creates_nodes_from_extractions(self):
@@ -182,7 +191,7 @@ class TestBuildGraph:
             document_id="12345", metadata={"doi": "10.1", "pmid": "12345"}, extractions=[ext],
         )
         graph = build_graph([result], registry)
-        assert len(graph.nodes) == 1
+        assert _data_nodes(graph) == 1
         node = graph.nodes[0]
         assert node.id.startswith("alte")
         assert "Alternative" in node.labels
@@ -210,7 +219,7 @@ class TestBuildGraph:
             DocumentExtractionResult(document_id="222", metadata={"doi": "10.2", "pmid": "222"}, extractions=[ext2]),
         ]
         graph = build_graph(results, registry, global_types=global_types)
-        assert len(graph.nodes) == 1  # deduped because Alternative is global
+        assert _data_nodes(graph) == 1  # deduped because Alternative is global
         node = graph.nodes[0]
         assert "111" in node.source_pmids
         assert "222" in node.source_pmids
@@ -236,9 +245,10 @@ class TestBuildGraph:
         ]
         graph = build_graph(results, registry)
         # Result is article-scoped → two separate nodes
-        assert len(graph.nodes) == 2
-        ids = {n.id for n in graph.nodes}
-        assert len(ids) == 2  # different IDs
+        assert _data_nodes(graph) == 2
+        data_ids = {n.id for n in graph.nodes
+                    if not (n.properties or {}).get("_prebuilt")}
+        assert len(data_ids) == 2  # different IDs
 
     def test_resolves_reference_edges(self):
         """Result.indicator_abbreviation reference creates corresponds_to edge."""
@@ -265,7 +275,7 @@ class TestBuildGraph:
             document_id="12345", metadata={"doi": "10.1", "pmid": "12345"}, extractions=[ind_ext, res_ext],
         )
         graph = build_graph([result], registry)
-        assert len(graph.nodes) == 2
+        assert _data_nodes(graph) == 2
         # Should have a corresponds_to edge from Result to Indicator
         ref_edges = [e for e in graph.edges if e.type == "corresponds_to"]
         assert len(ref_edges) == 1
@@ -286,7 +296,7 @@ class TestBuildGraph:
         ext = Extraction(extraction_class="Alternative", extraction_text="")
         result = DocumentExtractionResult(document_id="12345", metadata={"doi": "10.1", "pmid": "12345"}, extractions=[ext])
         graph = build_graph([result], registry)
-        assert len(graph.nodes) == 0
+        assert _data_nodes(graph) == 0
 
     def test_merge_properties_on_dedup(self):
         """First article's properties take priority on dedup."""
@@ -309,7 +319,7 @@ class TestBuildGraph:
             DocumentExtractionResult(document_id="222", metadata={"doi": "10.2", "pmid": "222"}, extractions=[ext2]),
         ]
         graph = build_graph(results, registry, global_types=global_types)
-        assert len(graph.nodes) == 1
+        assert _data_nodes(graph) == 1
         node = graph.nodes[0]
         # First article's properties kept; second fills missing
         assert node.properties.get("abbreviation") == "THY"
@@ -385,7 +395,7 @@ class TestBuildGraphPrimaryTextIdentity:
             extractions=[ext],
         )
         graph = build_graph([result], registry, global_types=global_types)
-        assert len(graph.nodes) == 1
+        assert _data_nodes(graph) == 1
         node = graph.nodes[0]
         # Properties keep the original extraction_text as "name"
         assert node.properties["name"] == "MA"
@@ -435,7 +445,7 @@ class TestBuildGraphPrimaryTextIdentity:
             ),
         ]
         graph = build_graph(results, registry, global_types=global_types)
-        assert len(graph.nodes) == 1
+        assert _data_nodes(graph) == 1
 
 
 class TestBuildGraphDedup:
@@ -479,7 +489,7 @@ class TestBuildGraphDedup:
         ]
         graph = build_graph(results, registry, global_types=global_types)
         # Should be 1 node after dedup, because "MA" matches ext1's abbreviation
-        assert len(graph.nodes) == 1
+        assert _data_nodes(graph) == 1
         node = graph.nodes[0]
         assert "111" in node.source_pmids
         assert "222" in node.source_pmids
@@ -515,4 +525,4 @@ class TestBuildGraphDedup:
             ),
         ]
         graph = build_graph(results, registry, global_types=global_types)
-        assert len(graph.nodes) == 1
+        assert _data_nodes(graph) == 1

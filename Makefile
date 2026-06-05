@@ -72,7 +72,7 @@ batch-dir:
 	$(CLI) batch --input $(DIR)
 
 batch-all:
-	$(CLI) batch --input data/xml/
+	$(CLI) batch --input data/all/
 
 # ---------------------------------------------------------------------------
 # Batch extraction (standalone script — no CLI install needed)

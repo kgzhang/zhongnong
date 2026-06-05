@@ -136,12 +136,39 @@ def build_abbreviation_map(
             if abbr_norm and abbr_norm != canonical and len(abbr_norm) >= 2:
                 abbr_map[abbr_norm] = canonical
 
-        # Source 2: short extraction_text (likely abbreviation)
+        # Source 2: short extraction_text (likely abbreviation, ≤5 chars)
         ext_text_norm = normalize_name(ext.extraction_text)
         if 2 <= len(ext_text_norm) <= 5 and ext_text_norm != canonical:
-            # Only map if it looks like an abbreviation (all caps in original)
             if ext.extraction_text.isupper() or ext.extraction_text.istitle():
                 abbr_map[ext_text_norm] = canonical
+
+    # Source 3: word-overlap — one name is an abbreviated form of another
+    # (e.g. "B. hominis LYH1" ← "Blautia hominis LYH1").
+    # When multiple matches exist, prefer the SHORTER canonical name
+    # (fewest words) since longer names are likely derivatives/descriptions.
+    entries = [(identity_key(e, None), e) for e in extractions]
+    for i, (key_a, ext_a) in enumerate(entries):
+        words_a = set(w for w in key_a.split() if len(w) > 2)
+        if len(words_a) < 2:
+            continue
+        for j, (key_b, ext_b) in enumerate(entries):
+            if i >= j:
+                continue
+            words_b = set(w for w in key_b.split() if len(w) > 2)
+            if len(words_b) < 2:
+                continue
+            common = words_a & words_b
+            if len(common) >= 2:
+                if common == words_a:
+                    # key_a is abbreviated form → map to key_b
+                    # Prefer shorter target (fewer words)
+                    existing = abbr_map.get(key_a)
+                    if existing is None or len(existing.split()) > len(key_b.split()):
+                        abbr_map[key_a] = key_b
+                elif common == words_b:
+                    existing = abbr_map.get(key_b)
+                    if existing is None or len(existing.split()) > len(key_a.split()):
+                        abbr_map[key_b] = key_a
 
     return abbr_map
 
@@ -380,6 +407,8 @@ def resolve_coreferences(
         by_type[ext.extraction_class].append(ext)
 
     result: list[Extraction] = []
+    # Collect alias maps per entity type for cross-reference normalization
+    all_alias_maps: dict[str, dict[str, str]] = {}
 
     for etype, exts in by_type.items():
         # Determine primary_text field from registry
@@ -402,6 +431,9 @@ def resolve_coreferences(
         all_aliases: dict[str, str] = {}
         all_aliases.update(vocab_syns)  # vocab synonyms take priority
         all_aliases.update(abbr_map)
+
+        # Save for cross-reference normalization
+        all_alias_maps[etype] = dict(all_aliases)
 
         # Group by canonical identity
         groups: dict[str, list[Extraction]] = defaultdict(list)
@@ -447,7 +479,65 @@ def resolve_coreferences(
         # Add ungrouped as-is
         result.extend(ungrouped)
 
+    # Normalize cross-entity references after merge, using the same
+    # alias maps that were used for same-type dedup (so merged-away
+    # names like "B. hominis LYH1" still map to "Blautia hominis LYH1")
+    _normalize_cross_references(result, registry, all_alias_maps)
+
     return result
+
+
+def _normalize_cross_references(
+    extractions: list[Extraction],
+    registry: Any = None,
+    alias_maps: dict[str, dict[str, str]] | None = None,
+) -> None:
+    """Normalize cross-entity reference fields after coref merge.
+
+    Uses pre-computed alias maps from same-type dedup so that merged-away
+    names (e.g. "B. hominis LYH1" merged into "Blautia hominis LYH1")
+    still resolve to the canonical entity.
+    """
+    # Build lookup: entity_type → {normalized_name: canonical_display_name}
+    canonical_map: dict[str, dict[str, str]] = {}
+    for ext in extractions:
+        etype = ext.extraction_class
+        name = ext.extraction_text.strip()
+        if name:
+            canonical_map.setdefault(etype, {})[normalize_name(name)] = name
+        abbr = (ext.attributes or {}).get("abbreviation", "")
+        if abbr and isinstance(abbr, str) and abbr.strip():
+            canonical_map.setdefault(etype, {})[normalize_name(abbr)] = name
+
+    # Merge in pre-computed alias maps (from same-type dedup)
+    if alias_maps:
+        for etype, amap in alias_maps.items():
+            cmap = canonical_map.setdefault(etype, {})
+            for alias_norm, canonical_norm in amap.items():
+                # Resolve canonical_norm to display name
+                display = cmap.get(canonical_norm, canonical_norm.replace(" ", " ").title())
+                cmap[alias_norm] = display
+
+    # Apply canonical names to reference fields
+    if not registry:
+        return
+    for ext in extractions:
+        try:
+            ed = registry.entity_def(ext.extraction_class)
+        except (KeyError, AttributeError):
+            continue
+        for ref in ed.references:
+            val = (ext.attributes or {}).get(ref.name)
+            if not val or not isinstance(val, str):
+                continue
+            target_map = canonical_map.get(ref.target_entity, {})
+            norm_val = normalize_name(val)
+            if norm_val in target_map:
+                canonical = target_map[norm_val]
+                if canonical != val:
+                    attrs = ext.attributes or {}
+                    attrs[ref.name] = canonical
+                    ext.attributes = attrs
 
 
 def _parse_dedup_mode(notes: str) -> str:
@@ -884,12 +974,17 @@ def clean_evidence_text(text: str) -> str:
 
 
 def clean_evidence_batch(extractions: list[Extraction]) -> None:
-    """Clean + trim evidence text for all extractions in-place."""
+    """Clean evidence text for all extractions in-place.
+
+    Only applies whitespace cleanup — does NOT truncate evidence text,
+    preserving the sentence-boundary window and ensuring source_location
+    remains a substring of evidence_text.
+    """
     for ext in extractions:
         ev = getattr(ext, "evidence_text", "")
         if not ev:
             continue
         ev = clean_evidence_text(ev)
-        # Apply 30-word trim after cleanup
-        _apply_evidence_trim(ext, ext.extraction_text)
+        # Keep full sentence-boundary evidence — no truncation
+        ext.evidence_text = ev
 

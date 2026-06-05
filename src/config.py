@@ -29,15 +29,15 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.1
     llm_max_tokens: int = 16384
     llm_thinking_enabled: bool = Field(
-        default=True,
+        default=False,
         validation_alias="ZN_LLM_THINKING_ENABLED",
         description="Enable chain-of-thought thinking mode (disable for batch processing)",
     )
 
     # Pipeline
-    max_char_buffer: int = 8000
-    batch_length: int = 1
-    max_workers: int = 4
+    max_char_buffer: int = 16000
+    batch_length: int = 32
+    max_workers: int = 512
     extraction_passes: int = 1
     context_window_chars: int | None = None
 
@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     cache_enabled: bool = True
     cache_dir: Path = Path("data/cache")
 
-    # Paths
+    # Paths，生产一定要改
     data_dir: Path = Path("data")
     output_dir: Path = Path("output")
     checkpoint_dir: Path = Path("data/intermediates")

@@ -21,15 +21,13 @@ class OpenAICompatProvider(BaseLanguageModel):
 
     def __init__(self, model_id: str = "deepseek-chat", api_key: str | None = None,
                  base_url: str | None = None, format_type: FormatType = FormatType.JSON,
-                 temperature: float | None = None, max_workers: int = 10,
-                 thinking_enabled: bool = True, **kwargs):
+                 temperature: float | None = None, thinking_enabled: bool = True, **kwargs):
         super().__init__(**kwargs)
         self.model_id = model_id
         self.api_key = api_key
         self.base_url = base_url or settings.llm_base_url
         self.format_type = format_type
         self.temperature = temperature if temperature is not None else settings.llm_temperature
-        self.max_workers = max_workers
         self.thinking_enabled = thinking_enabled
         self.openai_schema: OpenAISchema | None = None
         self._capabilities = detect_capabilities(model_id)
@@ -61,10 +59,68 @@ class OpenAICompatProvider(BaseLanguageModel):
 
     def infer(self, batch_prompts: Sequence[str], **kwargs) -> Iterator[Sequence[ScoredOutput]]:
         merged = self.merge_kwargs(kwargs)
-        client = self._get_client()
-        for prompt in batch_prompts:
-            result = self._process_single(client, prompt, merged)
+
+        if len(batch_prompts) <= 1:
+            client = self._get_client()
+            result = self._process_single(client, batch_prompts[0], merged)
             yield [result]
+            return
+
+        # Multiple prompts: send ALL concurrently via asyncio + AsyncClient.
+        # One shared client, one event loop, all prompts in-flight at once.
+        import asyncio
+
+        async def _run_all():
+            async with httpx.AsyncClient(
+                base_url=self.base_url,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                timeout=httpx.Timeout(120.0),
+            ) as async_client:
+                tasks = [self._process_single_async(async_client, p, merged)
+                         for p in batch_prompts]
+                return await asyncio.gather(*tasks)
+
+        results = asyncio.run(_run_all())
+        for r in results:
+            if r is not None:
+                yield [r]
+
+    async def _process_single_async(self, client: httpx.AsyncClient,
+                                      prompt: str, config: dict) -> ScoredOutput | None:
+        """Async version of _process_single for use with asyncio.gather."""
+        import asyncio as _asyncio
+        body = self._build_request(prompt, config)
+        system_msg = body["messages"][0]["content"]
+
+        if self._cache is not None:
+            cached = self._cache.get(self.model_id, system_msg, prompt)
+            if cached is not None:
+                return ScoredOutput(score=1.0, output=cached)
+
+        for attempt in range(settings.llm_max_retries):
+            try:
+                resp = await client.post("/chat/completions", json=body)
+                if resp.status_code in (429, 500, 502, 503):
+                    await _asyncio.sleep(2 ** attempt)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                content = data["choices"][0]["message"]["content"]
+
+                if self._cache is not None:
+                    self._cache.set(self.model_id, system_msg, prompt, content)
+
+                return ScoredOutput(score=1.0, output=content)
+            except Exception as e:
+                if attempt == settings.llm_max_retries - 1:
+                    logger.error("LLM async inference failed: %s", e)
+                    return ScoredOutput(score=0.0, output="")
+                await _asyncio.sleep(2 ** attempt)
+        return ScoredOutput(score=0.0, output="")
+
 
     def _process_single(self, client: httpx.Client, prompt: str, config: dict) -> ScoredOutput:
         body = self._build_request(prompt, config)

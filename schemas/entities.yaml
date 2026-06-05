@@ -9,29 +9,19 @@ entities:
       blends, use the Composite_Product entity instead.
 
       '
-    extraction_guidance: "## Extraction Rules for Alternative\n\n1. SCAN: Search the\
-      \ entire paper, especially the Materials & Methods\n   section, for ALL substances\
-      \ administered with the intent to replace\n   or reduce antibiotic use in pigs.\
-      \ Look for: feed additives, dietary\n   supplements, commercial products, natural\
-      \ compounds, fermentation\n   products, probiotics, prebiotics, enzymes, organic\
-      \ acids, plant\n   extracts, trace elements, bioactive peptides, and oligosaccharides.\n\
-      \n2. VOCABULARY MATCH: For each substance found, match it against the\n   candidate\
-      \ vocabulary in ALTERNATIVE.tsv. Use fuzzy matching.\n   - Vocabulary match\
-      \ found → record the standard_name exactly as it\n     appears in the vocabulary,\
-      \ and mark match_source accordingly.\n     The classification will be auto-populated\
-      \ from the vocabulary.\n   - No vocabulary match AND it is a SINGLE substance\
-      \ → classification\n     set to \"Other\" (by post-processor), match_source\
-      \ = \"unmatched\".\n     Preserve the original name exactly as written in the\
-      \ paper.\n\n3. ORIGINAL TEXT PRESERVATION: Copy the EXACT original English name\n\
-      \   and abbreviation verbatim from the source text into the\n   original_text\
-      \ field. Do NOT normalize, translate, or modify.\n\n4. ANTIBIOTIC EXCLUSION:\
-      \ All positive-control antibiotics (e.g.,\n   Chlortetracycline, Bacitracin,\
-      \ Colistin) MUST NOT be extracted as\n   Alternative entities. Their information\
-      \ belongs in the Intervention\n   substance_name field.\n\n5. EVIDENCE: Always\
-      \ provide evidence_text (the original sentence\n   mentioning this substance)\
-      \ and source_location.\n\n6. SIX STANDARD CLASSES plus OTHER:\n   Standard:\
-      \ Plant_Extract, Trace_Element, Organic_Acid, Probiotic,\n   Polysaccharides_and_Oligosaccharides,\
-      \ Enzyme, Bioactive_Peptides.\n   Special: Other (single substance not in vocabulary).\n"
+    extraction_guidance: "## GATE CHECK — Is this paper about feed additives tested in\
+      \ pigs?\n\nRead the abstract. One question:\nIs a substance tested as a feed additive\
+      \ / dietary supplement in\npigs to improve production or replace antibiotics?\n\nYES →\
+      \ extract below. Clearly NO → return [].\n\n--- EXTRACTION RULES ---\n\n1. EXTRACT EVERY\
+      \ COMPONENT: For composite products, extract EACH\n   individual component as a separate\
+      \ Alternative.\n\n2. ONE ENTITY PER SUBSTANCE. If the same organism/compound appears\n   under different naming conventions (e.g., full genus vs. abbreviated\n   genus), extract it ONCE using the most complete form. Do NOT create\n   separate entities for the same thing.\n\
+      \   Put abbreviations in the abbreviation field, not as separate entities.\n\n3. A substance is a tangible compound/microorganism/extract/enzyme.\n   Derivatives or products\
+      \ OF a substance are NOT separate entities.\n   Example: if paper describes \"B. hominis\
+      \ LYH1\" and \"metabolites of\n   B. hominis\", only extract \"B. hominis LYH1\".\n   Supernatants,\
+      \ filtrates, processed forms → not substances.\n\n4. extraction_text must be a substance name, never a fragment.\n\n5.\
+      \ Positive-control antibiotics → do not extract.\n\n6. Classification: Plant_Extract, Trace_Element,\
+      \ Organic_Acid, Probiotic,\n   Polysaccharides_and_Oligosaccharides, Enzyme, Bioactive_Peptides,\
+      \ Other.\n"
     notes: "CRITICAL RULES:\n- DO NOT output 'none', 'unspecified', 'unknown', 'Not\
       \ reported',\n  'N/A', 'na', or any similar placeholder as a value. Use empty\n\
       \  string \"\" instead if information is genuinely absent.\n- Preserve the original\
@@ -145,15 +135,21 @@ entities:
       a separate Alternative entity.
 
       '
-    extraction_guidance: "## Three-Step Rule for Composite Products\n\n1. IDENTIFY:\
-      \ Find multi-component blends (commercial products like\n   \"Product X\", or\
-      \ experimental mixtures with 2+ active substances).\n\n2. DECOMPOSE: For each\
-      \ component in the blend, create a SEPARATE\n   Alternative entity with its\
-      \ own standard_name and evidence_text.\n\n3. LINK: Populate the \"components\"\
-      \ field with the standard_name of\n   each component Alternative entity.\n\n\
-      CRITICAL: Do NOT concatenate component names into a single long string\nas the\
-      \ Alternative name. Each component must be its own entity.\nNEVER concatenate\
-      \ component names with \"+\".\n"
+    extraction_guidance: "## Three-Step Rule for Composite Products\n\nWARNING — STRICT\
+      \ ELIGIBILITY CHECK BEFORE EXTRACTING:\n- Composite_Product requires ≥2 DISTINCT\
+      \ active components.\n- A SINGLE substance with an abbreviation (e.g., \"puerarin\
+      \ (PR)\") is\n  NOT a composite — it is an Alternative entity.\n- A SINGLE herbal\
+      \ extract is NOT a composite — it is an Alternative.\n- Only create Composite_Product\
+      \ when the paper explicitly describes a\n  MIXTURE or BLEND of MULTIPLE substances.\n\
+      \n1. IDENTIFY: Find multi-component blends (commercial products like\n   \"Product\
+      \ X\", or experimental mixtures with 2+ DISTINCT active\n   substances). Single-substance\
+      \ items MUST NOT be extracted here.\n\n2. DECOMPOSE: For each component in the\
+      \ blend, create a SEPARATE\n   Alternative entity with its own standard_name\
+      \ and evidence_text.\n\n3. LINK: Populate the \"components\" field with the standard_name\
+      \ of\n   each component Alternative entity. Must have ≥2 components.\n\nCRITICAL:\
+      \ Do NOT concatenate component names into a single long string\nas the Alternative\
+      \ name. Each component must be its own entity.\nNEVER concatenate component names\
+      \ with \"+\".\n"
     notes: 'mutually_exclusive_with: Alternative
 
       priority: 3'
@@ -189,7 +185,7 @@ entities:
       - Composite_Product
       via_field: components
       multiple: true
-    dedup_mode: article
+    dedup_mode: fuzzy
   Literature:
     display_name: Literature Reference
     primary_text: title
@@ -351,7 +347,7 @@ entities:
       type: string
       required: true
       source: structure
-    dedup_mode: article
+    dedup_mode: fuzzy
   Swine:
     display_name: Animal Parameters
     primary_text: breed
@@ -375,7 +371,7 @@ entities:
     attributes:
     - name: breed
       type: string
-      required: true
+      required: false
       source: llm
     - name: sex
       type: enum
@@ -413,7 +409,7 @@ entities:
       type: string
       required: true
       source: structure
-    dedup_mode: article
+    dedup_mode: fuzzy
   Intervention:
     display_name: Intervention / Treatment
     primary_text: intervention_target
@@ -424,19 +420,11 @@ entities:
 
       '
     notes: ''
-    extraction_guidance: "## Extraction Rules for Intervention\n\n1. SOURCE: Extract\
-      \ ALL intervention details from M&M section only.\n\n2. ONE INTERVENTION PER\
-      \ DISTINCT DOSE: Create a SEPARATE Intervention\n   entity for EACH dose level\
-      \ of the same substance.\n\n3. intervention_target: The name of the substance\
-      \ that this intervention\n   administers. Must match the standard_name of an\
-      \ Alternative entity.\n\n4. DOSE VALUES: Use EXACT dose value and unit as written.\
-      \ Do NOT convert.\n   If dose is NOT reported, leave dose_value as empty.\n\n\
-      5. ADMINISTRATION_ROUTE (EXACT enum): diet, drinking_water, oral_gavage,\n \
-      \  injection, topical, other.\n\n6. DURATION: Total treatment period (e.g.,\
-      \ \"28 days\").\n\n7. BASAL_DIET: The base diet formulation (e.g., \"corn-soybean\
-      \ meal based diet\").\n\n8. positive_control: If this is an antibiotic positive\
-      \ control, record\n   the antibiotic name AND dose. If not a positive control,\
-      \ leave empty.\n\n9. EVIDENCE: Provide evidence_text and source_location.\n"
+    extraction_guidance: "## Extraction Rules for Intervention\n\n1. SOURCE: Materials & Methods\
+      \ only.\n\n2. ONE PER DISTINCT DOSE.\n\n3. intervention_target: Must match the standard_name\
+      \ of an Alternative entity.\n   Derivatives (metabolites, supernatants) → target the original\
+      \ substance.\n\n4. Record: dose, unit, route (diet/drinking_water/oral_gavage/\n   injection/topical/other),\
+      \ duration, basal diet.\n\n5. POSITIVE CONTROL: Record antibiotic name + dose.\n"
     attributes:
     - name: intervention_target
       type: string
@@ -555,18 +543,13 @@ entities:
 
       '
     notes: ''
-    extraction_guidance: "## Extraction Rules for Tissue_Site\n\n1. SOURCE: Extract\
-      \ from M&M where sample collection is described.\n\n2. SITE_NAME: Use standardized\
-      \ anatomical names:\n   - Intestinal segments: \"duodenum\", \"jejunum\", \"\
-      ileum\", \"cecum\", \"colon\"\n   - Intestinal contents: \"cecal content\",\
-      \ \"ileal content\", etc.\n   - Intestinal tissues: \"jejunal mucosa\", \"ileal\
-      \ mucosa\", etc.\n   - Organs: \"liver\", \"spleen\", \"kidney\", \"lung\",\
-      \ \"heart\"\n   - Blood: \"serum\", \"plasma\", \"whole blood\"\n   - Other:\
-      \ \"feces\", \"urine\", \"muscle (longissimus dorsi)\"\n\n3. SITE_CATEGORY:\
-      \ content, mucosa, serum, tissue, feces, whole_organism.\n\n4. SPECIFICITY:\
-      \ Be as specific as the paper allows. \"ileal mucosa\", not just \"ileum\".\n\
-      \n5. Whole body for macro metrics: ADG, ADFI, F:G, FBW, mortality → \"Whole\
-      \ body\".\n"
+    extraction_guidance: "## Extraction Rules for Tissue_Site\n\nA Tissue_Site is a location WITHIN\
+      \ a living organism's body where a\nbiological sample was collected. Apply this reasoning\
+      \ to every candidate:\n\n1. Is this a physical body part or substance naturally present in\
+      \ an organism?\n2. Was a sample actually taken from this location?\n\nIf BOTH are true → Tissue_Site.\
+      \ Otherwise → not.\n\nImportant: laboratory artifacts (culture media, cell lines, reagents)\
+      \ are\nNOT body parts. Strip animal qualifiers from names (\"sow feces\" →\n\"feces\"). site_category:\
+      \ content/mucosa/serum/tissue/feces/whole_organism.\n"
     attributes:
     - name: site_name
       type: string
@@ -666,7 +649,7 @@ entities:
       source: llm
     - name: abbreviation
       type: string
-      required: true
+      required: false
       source: llm
     - name: unit
       type: string
@@ -717,7 +700,17 @@ entities:
       via the uses_method relationship.
 
       '
-    extraction_guidance: "## Extraction Rules for Method\n\n### WHAT TO EXTRACT (specific\
+    extraction_guidance: "## Extraction Rules for Method\n\n### RULE: Extract FIRST — every\
+      \ method mentioned in M&M.\nIf a measurement technique is described, extract it as\
+      \ a Method entity.\nBetter to have extra methods than broken Indicator→Method edges.\n\
+      \n### 0. CRITICAL — extraction_text (the method name)\n- Use the descriptive name\
+      \ from the paper, e.g., \"gas chromatography\",\n  \"ELISA assay\", \"16S rRNA sequencing\"\
+      , \"proximate analysis\".\n- NEVER use a bare reference number: \"AOAC method 930.15\"\
+      \ → use\n  \"oven drying method\" or \"AOAC 930.15 oven drying method\".\n- Simple\
+      \ measurement methods ARE valid if specifically mentioned:\n  \"weighing\" for body\
+      \ weight measurement, \"feed recording\" for\n  feed intake, \"fecal scoring\" for\
+      \ diarrhea assessment.\n- The method_name should name the TECHNIQUE used.\n\n### WHAT\
+      \ TO EXTRACT (specific\
       \ analytical/laboratory methods):\n- Named techniques with instruments: \"gas\
       \ chromatography (CP-3800, Varian)\",\n  \"16S rRNA sequencing (Illumina NovaSeq)\"\
       \n- Specific assay kits: \"ELISA (R&D Systems)\", \"BCA protein assay\",\n \
@@ -782,13 +775,21 @@ entities:
 
       '
     notes: ''
-    extraction_guidance: "## Extraction Rules for Result\n\n### 0. GENERAL RULES\n\
-      - Extract EVERY result that reports a statistical comparison,\n  regardless\
-      \ of P-value magnitude or significance.\n- Each Result is a triple: (tissue_site,\
-      \ indicator, direction).\n- If one sentence describes multiple indicators, SPLIT\
-      \ into separate\n  Result entities — one per indicator. Copy the same evidence_text\n\
-      \  sentence into each.\n- Every Result MUST be linked to its Indicator (corresponds_to),\n\
-      \  Tissue_Site (occurs_in), and Control_Group (compared_to).\n\n### 1. COMPARISON\
+    extraction_guidance: "## Extraction Rules for Result\n\n### 0. CRITICAL — extraction_text\
+      \ (the primary value / entity name)\n- MUST be a self-contained, meaningful identifier.\
+      \ Use the indicator\n  abbreviation (e.g., \"ADG\", \"Shannon\", \"ZO-1\") or a concise\
+      \ noun\n  phrase (e.g., \"litter size at weaning\", \"dry matter content\").\n- NEVER\
+      \ use a sentence FRAGMENT like \"maternal and\", \"the abundances\",\n  \"supplementation\
+      \ increased\", \"increased the\", \"post-weaning\". These\n  are partial phrases from\
+      \ surrounding text, not entity identifiers.\n- If a sentence says \"maternal MA supplementation\
+      \ increased litter size\n  at weaning\", the extraction_text is \"litter size at weaning\"\
+      , NOT\n  \"maternal and\" or \"supplementation increased\".\n- Each extraction_text must\
+      \ stand alone as a node name in the knowledge graph.\n\n### 1. GENERAL RULES\n- Extract\
+      \ EVERY result that reports a statistical comparison,\n  regardless of P-value magnitude\
+      \ or significance.\n- Each Result is a triple: (tissue_site, indicator, direction).\n\
+      - If one sentence describes multiple indicators, SPLIT into separate\n  Result entities\
+      \ — one per indicator.\n- Every Result MUST be linked to its Indicator (corresponds_to),\n\
+      \  Tissue_Site (occurs_in), and Control_Group (compared_to).\n\n### 2. COMPARISON\
       \ BASELINE\n- The baseline must be \"treatment vs control\" (horizontal comparison).\n\
       - For challenge models: the comparison baseline MUST be the\n  challenged_control,\
       \ NOT the unchallenged negative control.\n\n### 2. RELATION TYPE SELECTION (set\
@@ -859,7 +860,7 @@ entities:
       source: llm
     - name: significance_level
       type: enum
-      required: true
+      required: false
       source: llm
       values:
       - p_less_0.01

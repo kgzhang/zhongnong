@@ -137,14 +137,20 @@ class TestWordBoundaryMatching:
         assert e >= len(doc_with_isoflavones) or not doc_with_isoflavones[e].isalpha()
 
     def test_source_location_compact_format(self, doc_with_isoflavones):
-        """source_location should use compact 「…」/〖〗 markers."""
+        """source_location should be sentence-boundary text, ⊆ evidence_text."""
         ext = Extraction(extraction_class="Alt", extraction_text="flavone")
         result = align_and_evidence(ext, doc_with_isoflavones)
         loc = result.source_location
-        assert "〖" in loc, f"Expected 〖 in source_location, got: {loc}"
-        assert "〗" in loc, f"Expected 〗 in source_location, got: {loc}"
-        # Must not duplicate evidence_text (which is 200+ chars)
-        assert len(loc) < 120, f"source_location too long ({len(loc)} chars)"
+        ev = result.evidence_text
+        # source_location must be a substring of evidence_text
+        assert loc in ev, (
+            f"source_location not in evidence_text:\n"
+            f"  loc={loc[:80]}...\n  ev={ev[:80]}..."
+        )
+        # source_location must contain the matched text
+        assert "flavone" in loc, f"Expected 'flavone' in source_location, got: {loc}"
+        # source_location should be compact (roughly sentence-length)
+        assert len(loc) < 300, f"source_location too long ({len(loc)} chars)"
 
 
 # ---------------------------------------------------------------------------

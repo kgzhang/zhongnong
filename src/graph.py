@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from src.extraction import DocumentExtractionResult
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +73,33 @@ def _normalize_name(name: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 
+# Unique 4-char prefixes per entity type — avoids collisions between
+# types that share the same first 4 letters (e.g. Alternative vs Alternative_Class).
+_TYPE_PREFIX: dict[str, str] = {
+    "Alternative":        "alte",
+    "Alternative_Class":  "alcl",   # distinct from Alternative's "alte"
+    "Composite_Product":  "comp",
+    "Literature":         "lite",
+    "Experiment":         "expe",
+    "Swine_Model":        "swmo",
+    "Swine":              "swin",
+    "Intervention":       "intv",
+    "Control_Group":      "ctgr",
+    "Tissue_Site":        "tiss",
+    "Indicator":          "indi",
+    "Method":             "meth",
+    "Result":             "resu",
+}
+
+
+def _type_prefix(entity_type: str) -> str:
+    """Return the 4-char prefix for *entity_type* (from mapping or fallback)."""
+    if entity_type in _TYPE_PREFIX:
+        return _TYPE_PREFIX[entity_type]
+    # Fallback: first 4 lowercase chars
+    return entity_type.lower()[:4]
+
+
 def entity_global_id(
     entity_type: str,
     primary_text: str,
@@ -83,10 +113,13 @@ def entity_global_id(
     entity type and name (shared across articles).  Otherwise the PMID is
     included, making the ID article-specific.
 
+    Each entity type gets a unique 4-char prefix (e.g. ``alte_`` for
+    Alternative, ``alcl_`` for Alternative_Class).
+
     Parameters
     ----------
     entity_type:
-        The entity class name (e.g. ``"Chemical"``, ``"Measurement"``).
+        The entity class name (e.g. ``"Alternative"``).
     primary_text:
         The primary identifying text (name) of the entity.
     article_pmid:
@@ -99,7 +132,7 @@ def entity_global_id(
     Returns
     -------
     str
-        Global ID like ``"alte_a1b2c3d4e5f6"``.
+        Global ID like ``"alte_a1b2c3d4e5f6"`` or ``"alcl_a1b2c3d4e5f6"``.
     """
     norm_name = _normalize_name(primary_text)
 
@@ -110,7 +143,7 @@ def entity_global_id(
         key = f"{entity_type}:{norm_name}:{pmid}"
 
     h = hashlib.sha256(key.encode()).hexdigest()[:12]
-    prefix = entity_type.lower()[:4]
+    prefix = _type_prefix(entity_type)
     return f"{prefix}_{h}"
 
 
@@ -182,14 +215,17 @@ def build_graph(
                 labels.append("Entity")
 
             if node_id in nodes_by_id:
-                # Merge source_pmids
+                # Merge: accumulate source_pmids, fill empty properties
                 existing = nodes_by_id[node_id]
                 if pmid not in existing.source_pmids:
                     existing.source_pmids.append(pmid)
-                # Merge properties (existing takes priority)
+                # Merge properties: fill empty/null values from new data,
+                # but keep existing non-empty values (first-paper authoritative)
                 for k, v in properties.items():
-                    if k not in existing.properties:
-                        existing.properties[k] = v
+                    ev = existing.properties.get(k)
+                    if ev is None or (isinstance(ev, str) and not ev.strip()):
+                        if v is not None:
+                            existing.properties[k] = v
             else:
                 nodes_by_id[node_id] = GraphNode(
                     id=node_id,
@@ -197,6 +233,12 @@ def build_graph(
                     properties=properties,
                     source_pmids=[pmid] if pmid else [],
                 )
+
+    # Pre-build all classification nodes from vocabulary (e.g. all
+    # Alternative_Class values from ALTERNATIVE.tsv).  These are reference
+    # nodes that always exist, even if no entity currently maps to them.
+    if registry is not None:
+        _prebuild_vocab_classification_nodes(nodes_by_id, registry, global_types)
 
     # Post-processing: create classification/category nodes from post-process
     # enum fields, with belongs_to edges. Generic — driven by registry metadata.
@@ -221,6 +263,87 @@ def build_graph(
         _remap_edges_after_dedup(edges, node_remap)
 
     return Graph(nodes=list(nodes_by_id.values()), edges=edges)
+
+
+def _prebuild_vocab_classification_nodes(
+    nodes_by_id: dict[str, GraphNode],
+    registry: Any,
+    global_types: frozenset[str] | set[str] | None = None,
+) -> None:
+    """Pre-build ALL classification nodes from the vocabulary (TSV).
+
+    Creates one node per unique classification value found in the
+    vocabulary for each entity type that has a ``source: post, type: enum``
+    attribute.  These reference nodes always exist in the graph, even
+    when no extracted entity maps to a given classification.
+    """
+    try:
+        all_entity_names = registry.all_entity_names()
+    except AttributeError:
+        return
+
+    for ename in all_entity_names:
+        vocab = registry.vocabulary(ename)
+        if not vocab or not vocab.entries:
+            continue
+
+        # Find the classification field for this entity type
+        try:
+            ed = registry.entity_def(ename)
+        except (KeyError, AttributeError):
+            continue
+        class_field: str | None = None
+        subclass_field: str | None = None
+        for a in ed.attributes:
+            if a.source == "post" and a.type == "enum":
+                class_field = a.name
+            elif a.source == "post" and a.type == "string" and a.name != "match_source":
+                subclass_field = a.name
+
+        if not class_field:
+            continue
+
+        class_node_type = f"{ename}_Class"
+        binding = ed.vocabulary
+
+        # Collect unique classification values from the vocabulary
+        seen: set[str] = set()
+        for entry in vocab.entries:
+            cls_name = entry.get(binding.class_field or "", "")
+            if not cls_name or not cls_name.strip():
+                continue
+            cls_name = cls_name.strip()
+            if cls_name in seen:
+                continue
+            seen.add(cls_name)
+
+            class_node_id = entity_global_id(
+                class_node_type, cls_name, None, global_types=global_types
+            )
+            if class_node_id in nodes_by_id:
+                continue
+
+            subclass_name = ""
+            if subclass_field and binding.subclass_field:
+                subclass_name = entry.get(binding.subclass_field, "")
+
+            nodes_by_id[class_node_id] = GraphNode(
+                id=class_node_id,
+                labels=[class_node_type, "Entity"],
+                properties={
+                    "name": cls_name,
+                    "entity_type": class_node_type,
+                    "class_name": cls_name,
+                    "subclass": subclass_name or "",
+                    "_prebuilt": True,
+                },
+                source_pmids=[],
+            )
+
+    logger.info(
+        "Pre-built classification nodes from vocabulary for %d entity type(s)",
+        sum(1 for ename in all_entity_names if registry.vocabulary(ename)),
+    )
 
 
 def _create_classification_nodes(

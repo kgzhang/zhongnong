@@ -185,20 +185,22 @@ class TestDedupModeField:
         assert ed.dedup_mode == "fuzzy"
 
     def test_article_scoped_entities(self):
-        """Article-scoped entities should have dedup_mode='article'."""
+        """Article-scoped entities (per-article, NOT merged across papers)."""
         registry = SchemaRegistry(config_dir=SCHEMA_DIR)
         article_scoped = [
-            "Experiment", "Swine_Model", "Swine", "Intervention",
-            "Control_Group", "Result", "Literature", "Composite_Product",
+            "Experiment", "Intervention", "Control_Group", "Result", "Literature",
         ]
         for ename in article_scoped:
             ed = registry.entity_def(ename)
             assert ed.dedup_mode == "article", f"{ename} should be article-scoped, got {ed.dedup_mode}"
 
     def test_global_entities(self):
-        """Global entities should have dedup_mode='fuzzy' or 'exact'."""
+        """Global entities (merged across papers) should have dedup_mode='fuzzy' or 'exact'."""
         registry = SchemaRegistry(config_dir=SCHEMA_DIR)
         assert registry.entity_def("Alternative").dedup_mode == "fuzzy"
+        assert registry.entity_def("Composite_Product").dedup_mode == "fuzzy"
+        assert registry.entity_def("Swine_Model").dedup_mode == "fuzzy"
+        assert registry.entity_def("Swine").dedup_mode == "fuzzy"
         assert registry.entity_def("Tissue_Site").dedup_mode == "fuzzy"
         assert registry.entity_def("Indicator").dedup_mode == "exact"
         assert registry.entity_def("Method").dedup_mode == "exact"
@@ -209,11 +211,14 @@ class TestDedupModeField:
         registry = SchemaRegistry(config_dir=SCHEMA_DIR)
         global_types = registry.get_global_types()
         assert "Alternative" in global_types
+        assert "Composite_Product" in global_types
+        assert "Swine_Model" in global_types
+        assert "Swine" in global_types
         assert "Tissue_Site" in global_types
         assert "Indicator" in global_types
         assert "Method" in global_types
         assert "Alternative_Class" in global_types
         # Article-scoped types are NOT in global_types
-        for ename in ["Experiment", "Swine_Model", "Swine", "Intervention",
-                       "Control_Group", "Result", "Literature", "Composite_Product"]:
+        for ename in ["Experiment", "Intervention", "Control_Group",
+                       "Result", "Literature"]:
             assert ename not in global_types, f"{ename} should NOT be in global_types"

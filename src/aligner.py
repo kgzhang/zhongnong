@@ -434,33 +434,36 @@ def _build_result(
 ) -> AlignResult:
     """Build an AlignResult from an aligned character interval.
 
-    source_location uses anchor text — a short excerpt (20 chars before +
-    the matched text itself) that can be text-searched back to the original
-    document.  Unlike evidence_text (which is a large context window),
-    source_location is a compact locator, not a duplicate.
+    evidence_text:
+        Context window (±*context_chars*) expanded to sentence boundaries.
+        May span multiple sentences — provides full context for the match.
+
+    source_location:
+        ONLY the single sentence that contains the matched text range.
+        Always a strict substring of evidence_text, shorter, used solely
+        for locating the entity in the source document.
     """
     ci = CharInterval(start_pos=start_pos, end_pos=end_pos)
 
-    # Extract evidence with context
-    ev_start = max(0, start_pos - context_chars)
-    ev_end = min(len(document_text), end_pos + context_chars)
+    # -- evidence_text: multi-sentence context window --
+    raw_start = max(0, start_pos - context_chars)
+    raw_end = min(len(document_text), end_pos + context_chars)
+
+    ev_start = _sentence_start(document_text, raw_start)
+    ev_end = _sentence_end(document_text, raw_end)
+    ev_start = _ltrim(document_text, ev_start, ev_end)
+    ev_end = _rtrim(document_text, ev_start, ev_end)
     evidence = document_text[ev_start:ev_end]
 
-    # Anchor-text based source_location: a short, unique-enough string that
-    # can be used to locate the entity in the original document via simple
-    # text search.  Keep it to ~80 chars total: 20 before + matched text +
-    # 20 after.  Use 「...」 for start-of-doc / end-of-doc markers instead
-    # of '...' since '...' looks like ellipsis and confuses users.
-    anchor_before = document_text[max(0, start_pos - 20):start_pos]
-    anchor_text = document_text[start_pos:end_pos]
-    anchor_after = document_text[end_pos:min(len(document_text), end_pos + 20)]
-
-    # Only show up to 20 chars of context on each side; indicate truncation
-    prefix = "「…」" if start_pos > 20 else ""
-    suffix = "「…」" if end_pos + 20 < len(document_text) else ""
-    source_loc = (
-        f"{prefix}{anchor_before} 〖{anchor_text}〗 {anchor_after}{suffix}"
-    )
+    # -- source_location: ONLY the sentence containing the match --
+    # Find the sentence that contains start_pos by looking for the
+    # nearest sentence boundaries around the match itself.
+    sl_start = _sentence_start(document_text, start_pos)
+    sl_end = _sentence_end(document_text, end_pos)
+    # Constrain to evidence_text bounds (should always be within)
+    sl_start = max(ev_start, _ltrim(document_text, sl_start, sl_end))
+    sl_end = min(ev_end, _rtrim(document_text, sl_start, sl_end))
+    source_loc = document_text[sl_start:sl_end]
 
     return AlignResult(
         char_interval=ci,
@@ -468,3 +471,72 @@ def _build_result(
         alignment_status=status,
         source_location=source_loc,
     )
+
+
+def _sentence_start(text: str, pos: int) -> int:
+    """Move *pos* backward to the nearest sentence-start boundary.
+
+    A sentence boundary is defined as: start of text, or a position
+    following a sentence-ending punctuation mark (``. ! ?``) plus
+    whitespace, or a newline.
+    """
+    if pos <= 0:
+        return 0
+    # Search backward for sentence boundary within 500 chars
+    search_start = max(0, pos - 500)
+    chunk = text[search_start:pos]
+    # Sentence-ending punctuation followed by space/newline + capital letter
+    # or just a newline
+    for i in range(len(chunk) - 1, -1, -1):
+        ch = chunk[i]
+        if ch == '\n':
+            return search_start + i + 1
+        if ch in '.!?':
+            # Check if followed by space and capital letter or newline
+            after = text[search_start + i + 1:search_start + i + 10]
+            if after and (after[0] in ' \n\t' or (len(after) >= 2 and after[0].isspace())):
+                return search_start + i + 1
+    # Fallback: move pos back 200 chars, then forward past whitespace
+    fallback = max(0, pos - 200)
+    while fallback < pos and text[fallback] in ' \t\n\r':
+        fallback += 1
+    return fallback
+
+
+def _ltrim(text: str, start: int, end: int) -> int:
+    """Move *start* forward past leading whitespace."""
+    while start < end and text[start] in ' \t\n\r':
+        start += 1
+    return start
+
+
+def _rtrim(text: str, start: int, end: int) -> int:
+    """Move *end* backward past trailing whitespace."""
+    while end > start and text[end - 1] in ' \t\n\r':
+        end -= 1
+    return end
+
+
+def _sentence_end(text: str, pos: int) -> int:
+    """Move *pos* forward to the nearest sentence-end boundary.
+
+    A sentence boundary is defined as: end of text, or a sentence-ending
+    punctuation mark (``. ! ?``) followed by space+capital or newline.
+    """
+    if pos >= len(text):
+        return len(text)
+    # Search forward for sentence boundary within 500 chars
+    search_end = min(len(text), pos + 500)
+    chunk = text[pos:search_end]
+    for i, ch in enumerate(chunk):
+        if ch == '\n':
+            return pos + i
+        if ch in '.!?':
+            after_start = pos + i + 1
+            after = text[after_start:after_start + 5]
+            if after and (after[0] in ' \n\t' or after[0].isspace()):
+                return min(len(text), after_start)
+            # Also end at period-space-number pattern (e.g., "P < 0.05")
+            if after and after[0].isdigit():
+                continue
+    return min(len(text), pos + 200)  # fallback: 200 chars forward

@@ -508,23 +508,20 @@ def _resolve_location(
     Format is compact: ``「…」<20 chars before> 〖<matched text>〗 <20 chars after>「…」``
     where ``「…」`` marks truncation at the start/end of the document.
     """
-    # If aligner already set a source_location (not the old pos@ format), keep it
+    # If aligner already set a source_location (single sentence format),
+    # keep it as-is — it is guaranteed to be ⊆ evidence_text.
     existing = getattr(extraction, "source_location", "") or ""
-    if existing.startswith("「…」") or existing.startswith("near:"):
-        # already has a good source_location; just prepend section info
-        return f"{section_id}, {existing}"
+    if existing and len(existing) > 20 and not existing.startswith("pos@"):
+        return existing
 
     parts = [section_id]
     ci = extraction.char_interval
     if ci is not None and ci.start_pos is not None:
-        # Use 20-char anchor before/after the matched position
-        anchor_before = section_text[max(0, ci.start_pos - 20):ci.start_pos]
-        anchor_text = section_text[ci.start_pos:min(len(section_text), ci.end_pos or ci.start_pos + 20)]
-        anchor_after = section_text[ci.end_pos or ci.start_pos:min(len(section_text), (ci.end_pos or ci.start_pos) + 20)]
-
-        prefix = "「…」" if ci.start_pos > 20 else ""
-        suffix = "「…」" if (ci.end_pos or ci.start_pos) + 20 < len(section_text) else ""
-        anchor_loc = f"{prefix}{anchor_before} 〖{anchor_text}〗 {anchor_after}{suffix}"
+        # Use sentence-boundary window around the matched position
+        # (same approach as the aligner)
+        sl_start = max(0, ci.start_pos - 120)
+        sl_end = min(len(section_text), (ci.end_pos or ci.start_pos) + 120)
+        anchor_loc = section_text[sl_start:sl_end].strip()
 
         # Also check for table/figure references nearby
         nearby_start = max(0, ci.start_pos - 200)
@@ -539,7 +536,7 @@ def _resolve_location(
             table_fig.append(fm.group(0))
 
         if table_fig:
-            parts.append(f"{anchor_loc}, {', '.join(table_fig)}")
+            parts.append(f"{anchor_loc} [{', '.join(table_fig)}]")
         else:
             parts.append(anchor_loc)
     return ", ".join(parts)
