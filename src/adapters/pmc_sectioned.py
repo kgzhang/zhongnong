@@ -322,7 +322,8 @@ def extract_sectioned(
     # 3. Methods section — multi-pass extraction.
     #    Gate phase runs first (must validate before spending tokens).
     #    Then independent phases (methods_core, bulk_methods) run in PARALLEL
-    #    since they extract from the same text but different entity types.
+    #    via ThreadPoolExecutor since they extract different entity types from
+    #    the same Methods text with no inter-phase data dependency.
     methods_text = _build_section_text(meta, "methods")
     methods_phases = _get_phase_entities_for_section(registry, "methods")
     gate_passed = True
@@ -404,27 +405,46 @@ def extract_sectioned(
                 logger.warning("Gate phase extraction failed: %s", exc)
                 warnings.append(f"Gate phase extraction failed: {exc}")
 
-        # --- Step 3b: Sequential methods phases ---
+        # --- Step 3b: Parallel methods phases ---
+        # methods_core and bulk_methods are INDEPENDENT — they extract
+        # different entity types from the same Methods text.  Running them
+        # in parallel cuts per-file wall-clock time ~in half for this stage.
         if gate_passed and independent_phases:
-            for pi in independent_phases:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            def _run_methods_phase(pi: dict):
+                """Run one methods phase — returns (phase_name, extractions, warnings)."""
                 pname = pi["phase"]
                 pentities = pi["entity_names"]
                 pdoc = Document(
                     text=methods_text,
                     document_id=f"{doc_id}_methods_{pname}",
                 )
+                pexts: list[Extraction] = []
+                pwarnings: list[str] = []
                 try:
                     presult = extract(
                         pdoc, registry=registry, model=model,
                         max_char_buffer=max_char_buffer, entity_names=pentities,
                         **kwargs,
                     )
-                    all_extractions.extend(presult.extractions)
-                    warnings.extend(presult.warnings)
-                    logger.info("  %s: %d entities", pname, len(presult.extractions))
+                    pexts = list(presult.extractions)
+                    pwarnings = list(presult.warnings)
                 except Exception as exc:
                     logger.warning("%s extraction failed: %s", pname, exc)
-                    warnings.append(f"{pname} extraction failed: {exc}")
+                    pwarnings.append(f"{pname} extraction failed: {exc}")
+                return (pname, pexts, pwarnings)
+
+            with ThreadPoolExecutor(max_workers=len(independent_phases)) as phase_executor:
+                future_to_phase = {
+                    phase_executor.submit(_run_methods_phase, pi): pi
+                    for pi in independent_phases
+                }
+                for future in as_completed(future_to_phase):
+                    pname, pexts, pwarns = future.result()
+                    all_extractions.extend(pexts)
+                    warnings.extend(pwarns)
+                    logger.info("  %s: %d entities", pname, len(pexts))
 
     # 4. Build combined context from all methods extractions for Results phase.
     #    Context is wrapped in XML-style tags to structurally separate

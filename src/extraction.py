@@ -496,12 +496,19 @@ def _build_graph_and_export(
     Produces:
     - ``review/`` — combined review CSVs for all files
     - ``review/by_file/<filename>/`` — per-file review CSVs for file-level alignment
+    - ``review/cleaning_report.json`` — data cleaning report
     - ``graph/`` — combined Neo4j CSV export
     """
     from src.adapters.pmc import export_entity_review_csv
     from src.graph import build_graph, export_neo4j_csv
+    from src.cleaning import clean_from_results
 
     out = output_dir
+
+    # --- Data Cleaning (post-LLM normalization + validation + dedup + repair) ---
+    logger.info("Running data cleaning pipeline...")
+    all_results = clean_from_results(all_results, registry=registry, generate_report=True)
+    logger.info("Data cleaning complete")
 
     # --- Combined review CSVs (all files merged) ---
     review_dir = out / "review"
@@ -539,6 +546,18 @@ def _build_graph_and_export(
     graph_dir.mkdir(parents=True, exist_ok=True)
     export_neo4j_csv(graph, graph_dir)
     logger.info("Neo4j CSV exported to %s/", graph_dir)
+
+    # --- Delivery layer: produce final cleaned outputs ---
+    # Gate-filtered literature manifest, entity review CSVs, Neo4j-ready CSVs
+    from src.delivery import export_delivery
+    try:
+        delivery_paths = export_delivery(all_results, out / "delivery", registry=registry)
+        logger.info(
+            "Delivery outputs: literature=%s, entities=%s, neo4j=%s",
+            delivery_paths["literature"], delivery_paths["entities"], delivery_paths["neo4j"],
+        )
+    except Exception as exc:
+        logger.warning("Delivery export failed: %s", exc)
 
     return {
         "results": all_results,

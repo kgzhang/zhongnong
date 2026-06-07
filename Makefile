@@ -1,4 +1,4 @@
-.PHONY: help install sync test test-cov test-watch debug batch batch-dir batch-all clean clean-all
+.PHONY: help install sync test test-cov test-watch debug batch batch-dir batch-all clean clean-all delivery delivery-fast
 
 CLI := uv run python -m src.cli
 STANDALONE := python scripts/batch_extract.py
@@ -37,6 +37,10 @@ help:
 	@echo "Cleanup:"
 	@echo "  make clean         Remove output + cache"
 	@echo "  make clean-all     Remove output + cache + .venv"
+	@echo ""
+	@echo "Delivery (post-extraction):"
+	@echo "  make delivery      Produce cleaned delivery data (8 workers)"
+	@echo "  make delivery-fast Produce cleaned delivery data (all CPUs)"
 	@echo ""
 
 # ---------------------------------------------------------------------------
@@ -107,3 +111,18 @@ clean-all: clean
 	@echo "Removing virtual environment..."
 	rm -rf .venv
 	@echo "Full cleanup complete."
+
+# ---------------------------------------------------------------------------
+# Delivery — produce final cleaned outputs from review CSVs
+# ---------------------------------------------------------------------------
+DELIVERY_SCRIPT := uv run python scripts/clean_and_deliver.py
+DELIVERY_IN := output/review/review
+DELIVERY_OUT := output/delivery
+
+delivery:
+	@echo "Producing delivery data..."
+	$(DELIVERY_SCRIPT) --input $(DELIVERY_IN) --output $(DELIVERY_OUT) --workers 8
+
+delivery-fast:
+	@echo "Producing delivery data (all CPUs)..."
+	$(DELIVERY_SCRIPT) --input $(DELIVERY_IN) --output $(DELIVERY_OUT) --workers $$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)

@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     # Pipeline
     max_char_buffer: int = 16000
     batch_length: int = 32
-    max_workers: int = 512
+    max_workers: int = 256
     extraction_passes: int = 1
     context_window_chars: int | None = None
 
