@@ -12,6 +12,7 @@ import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,7 @@ class Graph:
 # ---------------------------------------------------------------------------
 
 
+@lru_cache(maxsize=20000)
 def _normalize_name(name: str | None) -> str:
     """Aggressively normalise entity names for ID generation.
 
@@ -172,7 +174,7 @@ def build_graph(
         Deduplicated graph with nodes and edges.
     """
     nodes_by_id: dict[str, GraphNode] = {}
-    edges: list[GraphEdge] = []
+    edges_by_key: dict[tuple[str, str, str], GraphEdge] = {}
 
     # First pass: create nodes from all extractions
     for article_result in results:
@@ -243,7 +245,7 @@ def build_graph(
     # Post-processing: create classification/category nodes from post-process
     # enum fields, with belongs_to edges. Generic — driven by registry metadata.
     if registry is not None:
-        _create_classification_nodes(nodes_by_id, edges, registry, global_types)
+        _create_classification_nodes(nodes_by_id, edges_by_key, registry, global_types)
 
     # Post-dedup: for global entity types, merge nodes whose extraction_text
     # matches another node's abbreviation or standard_name (handles the case
@@ -255,14 +257,26 @@ def build_graph(
 
     # Second pass: resolve edges via registry definitions
     if registry is not None:
-        _resolve_edges(results, nodes_by_id, edges, registry, global_types, node_remap)
+        _resolve_edges(results, nodes_by_id, edges_by_key, registry, global_types, node_remap)
 
     # After edge resolution, remap edge source/target IDs for merged nodes
     # and remove duplicate edges that result from node merges.
     if node_remap:
-        _remap_edges_after_dedup(edges, node_remap)
+        edges_list = list(edges_by_key.values())
+        _remap_edges_after_dedup(edges_list, node_remap)
+        # Rebuild dict from remapped/deduped edges
+        edges_by_key.clear()
+        for e in edges_list:
+            key = (e.source_id, e.target_id, e.type)
+            if key in edges_by_key:
+                existing = edges_by_key[key]
+                for pmid in e.source_pmids:
+                    if pmid not in existing.source_pmids:
+                        existing.source_pmids.append(pmid)
+            else:
+                edges_by_key[key] = e
 
-    return Graph(nodes=list(nodes_by_id.values()), edges=edges)
+    return Graph(nodes=list(nodes_by_id.values()), edges=list(edges_by_key.values()))
 
 
 def _prebuild_vocab_classification_nodes(
@@ -348,7 +362,7 @@ def _prebuild_vocab_classification_nodes(
 
 def _create_classification_nodes(
     nodes_by_id: dict[str, GraphNode],
-    edges: list[GraphEdge],
+    edges_by_key: dict[tuple[str, str, str], GraphEdge],
     registry: Any,
     global_types: frozenset[str] | set[str] | None = None,
 ) -> None:
@@ -425,7 +439,7 @@ def _create_classification_nodes(
                         nodes_by_id[class_node_id].source_pmids.append(pmid)
 
             # Add belongs_to edge from entity -> class node
-            _add_edge(edges, node_id, class_node_id, "belongs_to", "", None)
+            _add_edge(edges_by_key, node_id, class_node_id, "belongs_to", "", None)
 
 
 def _deduplicate_global_nodes(
@@ -440,29 +454,50 @@ def _deduplicate_global_nodes(
     node B's ``abbreviation`` or ``standard_name``, node A is merged into
     node B.
 
+    Uses O(N) index lookups instead of the original O(N²) nested scan.
+
     Returns a ``{child_id: parent_id}`` map for downstream edge remapping.
     """
     merges: dict[str, str] = {}  # child_node_id → parent_node_id
 
+    # Build indexes: normalized abbreviation/standard_name → list of node IDs
+    abbrev_index: dict[str, list[str]] = {}
+    stdname_index: dict[str, list[str]] = {}
+    for node_id, node in nodes_by_id.items():
+        entity_type = node.properties.get("entity_type", "")
+        if entity_type not in global_types:
+            continue
+        abbrev = _normalize_name(node.properties.get("abbreviation") or "")
+        stdname = _normalize_name(node.properties.get("standard_name") or "")
+        if abbrev:
+            abbrev_index.setdefault(abbrev, []).append(node_id)
+        if stdname:
+            stdname_index.setdefault(stdname, []).append(node_id)
+
+    # For each node, check if its normalized name matches any other node's
+    # abbreviation or standard_name (O(1) lookup per node).
     for node_id, node in list(nodes_by_id.items()):
         entity_type = node.properties.get("entity_type", "")
         if entity_type not in global_types:
             continue
-
         node_name = _normalize_name(node.properties.get("name", ""))
         if not node_name:
             continue
 
-        for other_id, other in nodes_by_id.items():
-            if other_id == node_id:
-                continue
-            other_abbrev = _normalize_name(other.properties.get("abbreviation") or "")
-            other_std = _normalize_name(other.properties.get("standard_name") or "")
-
-            if (other_abbrev and other_abbrev == node_name) or \
-               (other_std and other_std == node_name):
-                merges[node_id] = other_id
+        # Find a parent: any other node whose abbreviation or standard_name
+        # matches this node's name
+        parent_id: str | None = None
+        for cand_id in abbrev_index.get(node_name, []):
+            if cand_id != node_id:
+                parent_id = cand_id
                 break
+        if parent_id is None:
+            for cand_id in stdname_index.get(node_name, []):
+                if cand_id != node_id:
+                    parent_id = cand_id
+                    break
+        if parent_id is not None:
+            merges[node_id] = parent_id
 
     # Apply merges
     for child_id, parent_id in merges.items():
@@ -524,7 +559,7 @@ def _remap_edges_after_dedup(
 def _resolve_edges(
     results: list[DocumentExtractionResult],
     nodes_by_id: dict[str, GraphNode],
-    edges: list[GraphEdge],
+    edges_by_key: dict[tuple[str, str, str], GraphEdge],
     registry: Any,
     global_types: frozenset[str] | set[str] | None = None,
     node_remap: dict[str, str] | None = None,
@@ -535,6 +570,20 @@ def _resolve_edges(
     been merged by the post-dedup step.
     """
     remap = node_remap or {}
+
+    # Pre-build a target-name index for _auto_detect_ref to avoid
+    # O(N) node scans on every call (was the #1 bottleneck).
+    target_name_index: dict[tuple[str, str], str] = {}  # (target_type, norm_name) → node_name
+    # Secondary index: norm_name → list of (entity_type, node_name) for
+    # O(1) cross-type lookups when the target type doesn't match exactly.
+    name_only_index: dict[str, list[tuple[str, str]]] = {}
+    for node in nodes_by_id.values():
+        entity_type = node.properties.get("entity_type", "")
+        node_name = node.properties.get("name", "")
+        if entity_type and node_name:
+            norm = _normalize_name(node_name)
+            target_name_index[(entity_type, norm)] = node_name
+            name_only_index.setdefault(norm, []).append((entity_type, node_name))
 
     for article_result in results:
         pmid = article_result.document_id
@@ -571,7 +620,8 @@ def _resolve_edges(
                     # semantically meaningful values (e.g. "ADG" for
                     # indicator) without using the exact reference field name.
                     ref_value = _auto_detect_ref(
-                        ext, ref, nodes_by_id, registry, global_types
+                        ext, ref, nodes_by_id, registry, global_types,
+                        target_name_index, name_only_index,
                     )
                 if ref_value is None:
                     continue
@@ -580,7 +630,7 @@ def _resolve_edges(
                     ref.target_entity, str(ref_value), pmid, global_types=global_types
                 )
                 target_id = remap.get(target_id, target_id)
-                _add_edge(edges, source_id, target_id, ref.edge_type, pmid, ext)
+                _add_edge(edges_by_key, source_id, target_id, ref.edge_type, pmid, ext)
 
             # --- Resolve inline relations ---
             for ir in entity_def.inline_relations:
@@ -599,7 +649,7 @@ def _resolve_edges(
                             target_type, str(ir_val), pmid, global_types=global_types
                         )
                         target_id = remap.get(target_id, target_id)
-                        _add_edge(edges, source_id, target_id, ir.name, pmid, ext)
+                        _add_edge(edges_by_key, source_id, target_id, ir.name, pmid, ext)
 
 
 def _get_attr(attributes: dict[str, Any] | None, key: str) -> Any:
@@ -615,13 +665,14 @@ def _auto_detect_ref(
     nodes_by_id: dict[str, GraphNode],
     registry: Any,
     global_types: frozenset[str] | set[str] | None = None,
+    target_name_index: dict[tuple[str, str], str] | None = None,
+    name_only_index: dict[str, list[tuple[str, str]]] | None = None,
 ) -> str | None:
     """Auto-detect a cross-entity reference when the exact reference field
     name was not populated by the LLM.
 
-    Scans the extraction's attributes for values that match a target entity's
-    name (by exact or normalized comparison).  Used as a fallback in
-    ``_resolve_edges``.
+    Uses pre-built indices for O(1) lookups instead of scanning all nodes on
+    every call.
 
     Returns the **identity key** of the matched target node, so that
     ``entity_global_id()`` produces the same ID the target node already has.
@@ -630,6 +681,8 @@ def _auto_detect_ref(
     """
     attrs = ext.attributes or {}
     target_type = ref.target_entity
+    index = target_name_index or {}
+    name_idx = name_only_index or {}
 
     # Determine the identity-key attribute for the target entity type
     pt_attr: str | None = None
@@ -640,61 +693,62 @@ def _auto_detect_ref(
         except (KeyError, AttributeError):
             pass
 
-    def _identity_key(node: GraphNode) -> str:
-        """Get the identity key for *node* consistent with build_graph."""
-        if pt_attr and node.properties.get(pt_attr):
-            return str(node.properties[pt_attr])
-        return node.properties.get("name", "")
-
-    # Strategy 1: scan all attribute string values for a match against any
-    # existing node of the target entity type
+    # Strategy 1: lookup each attribute value in the pre-built index (O(1)
+    # per attr instead of O(N) node scan).
     for attr_val in attrs.values():
         if not isinstance(attr_val, str) or not attr_val.strip():
             continue
         v = attr_val.strip()
-        for node in nodes_by_id.values():
-            if node.properties.get("entity_type") != target_type:
-                continue
-            node_name = node.properties.get("name", "")
-            if (node_name.lower() == v.lower() or
-                _normalize_name(node_name) == _normalize_name(v)):
-                return _identity_key(node)
+        v_norm = _normalize_name(v)
+        # Try exact type+name match first
+        key = (target_type, v_norm)
+        if key in index:
+            return index[key]
+        # Cross-type lookup via name-only index (O(1) instead of O(N))
+        for etype, node_name in name_idx.get(v_norm, []):
+            if etype == target_type or (global_types and etype in global_types):
+                return node_name
 
     # Strategy 2: try matching source extraction_text against target node names
     # by word overlap (e.g., "thymol" in Intervention → "thymol" in Alternative)
     src_text = ext.extraction_text.strip()
     src_norm = _normalize_name(src_text)
-    for node in nodes_by_id.values():
-        if node.properties.get("entity_type") != target_type:
-            continue
-        node_name = node.properties.get("name", "")
-        node_norm = _normalize_name(node_name)
-        if node_norm and src_norm and (node_norm == src_norm or
-                                       node_norm in src_norm or
-                                       src_norm in node_norm):
-            return _identity_key(node)
+    if src_norm:
+        # Exact match in index
+        key = (target_type, src_norm)
+        if key in index:
+            return index[key]
+        # Substring match against names of the target entity type
+        for (etype, ename), node_name in index.items():
+            if etype == target_type and ename and src_norm and (
+                ename == src_norm or ename in src_norm or src_norm in ename
+            ):
+                return node_name
 
     return None
 
 
 def _add_edge(
-    edges: list[GraphEdge],
+    edges_by_key: dict[tuple[str, str, str], GraphEdge],
     source_id: str,
     target_id: str,
     edge_type: str,
     pmid: str,
     extraction: Any,
 ) -> None:
-    """Add an edge if source and target are different, deduplicating by (source, target, type)."""
+    """Add an edge if source and target are different, deduplicating by (source, target, type).
+
+    Uses *edges_by_key* dict for O(1) dedup lookup instead of scanning a list.
+    """
     if source_id == target_id:
         return
 
-    # Check for existing edge
-    for e in edges:
-        if e.source_id == source_id and e.target_id == target_id and e.type == edge_type:
-            if pmid and pmid not in e.source_pmids:
-                e.source_pmids.append(pmid)
-            return
+    key = (source_id, target_id, edge_type)
+    existing = edges_by_key.get(key)
+    if existing is not None:
+        if pmid and pmid not in existing.source_pmids:
+            existing.source_pmids.append(pmid)
+        return
 
     props: dict[str, Any] = {}
     # evidence_text is now on the Extraction directly (not in attributes)
@@ -702,13 +756,13 @@ def _add_edge(
     if ev:
         props["evidence_text"] = ev
 
-    edges.append(GraphEdge(
+    edges_by_key[key] = GraphEdge(
         source_id=source_id,
         target_id=target_id,
         type=edge_type,
         properties=props,
         source_pmids=[pmid] if pmid else [],
-    ))
+    )
 
 
 # ---------------------------------------------------------------------------

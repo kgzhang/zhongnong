@@ -10,3 +10,5 @@ data/
 .envdata/intermediates/
 output/
 *.log
+archive/
+legacy/
